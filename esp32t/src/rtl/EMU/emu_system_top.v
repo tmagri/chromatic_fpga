@@ -12,7 +12,9 @@ module emu_system_top
     input [63:0]        paletteOBJ0In,
     input [63:0]        paletteOBJ1In,
     input               paletteOff,
+    input [1:0]         oc_lvl,      // 0=1x  1=2x  2=4x
     output              gbc_mode,
+    output              isSGB_out,   // SGB game detected
     output [63:0]       gpd,
     
     input               BTN_NODIAGONAL,
@@ -134,14 +136,20 @@ module emu_system_top
 
     reg [3:0] joy_din;
     wire [1:0] joy_p54;
+    wire [3:0] sgb_joy_do;
+    // SGB takes over joy mux when enabled; otherwise use standard GB mux
     always@(posedge hclk)
     begin
-        case(joy_p54)
-            2'b00: joy_din <= (~btn_key) & (~dpad_key); 
-            2'b01: joy_din <= ~dpad_key;
-            2'b10: joy_din <= ~btn_key; 
-            2'b11: joy_din <= 4'hF;
-        endcase
+        if (isSGB_game) begin
+            joy_din <= sgb_joy_do;
+        end else begin
+            case(joy_p54)
+                2'b00: joy_din <= (~btn_key) & (~dpad_key); 
+                2'b01: joy_din <= ~dpad_key;
+                2'b10: joy_din <= ~btn_key; 
+                2'b11: joy_din <= 4'hF;
+            endcase
+        end
     end
 
     wire wr;
@@ -160,6 +168,8 @@ module emu_system_top
     wire [15:0] a;
     wire [2:0] TSTATEo;
     wire sleep_savestate;
+    wire ce_n;
+    wire ce_4x;
 
     speedcontrol u_speedcontrol
     (
@@ -167,9 +177,11 @@ module emu_system_top
         .pause       (sleep_savestate),
         .speedup     (),
         .cart_act    (rd | wr),
-        .DMA_on      (),
+        .DMA_on      (DMA_on),
         .ce          (ce),
+        .ce_n        (ce_n),
         .ce_2x       (ce_2x),
+        .ce_4x       (ce_4x),
         .refresh     (),
         .ff_on       ()
     );
@@ -286,14 +298,54 @@ module emu_system_top
     wire [15:0] snd_l;  
     wire [15:0] snd_r;  
 
+    // ----------------------------------------------------------------
+    // ROM header detection: snoop CPU bus reads at key cart addresses
+    // 0x0143 = CGB flag  (0x80=GBC compat, 0xC0=GBC only)
+    // 0x0146 = SGB flag  (0x03=SGB enhanced)
+    // 0x014B = old licensee code (0x33=new licensee, required for SGB)
+    // ----------------------------------------------------------------
+    reg [7:0] cart_cgb_flag    = 8'h00;
+    reg [7:0] cart_sgb_flag    = 8'h00;
+    reg [7:0] cart_old_lic     = 8'h00;
+    reg       hdr_cgb_captured = 1'b0;
+    reg       hdr_sgb_captured = 1'b0;
+    reg       hdr_lic_captured = 1'b0;
+
+    always @(posedge hclk) begin
+        if (gbreset) begin
+            hdr_cgb_captured <= 1'b0;
+            hdr_sgb_captured <= 1'b0;
+            hdr_lic_captured <= 1'b0;
+        end else if (rd) begin
+            case (a)
+                16'h0143: begin cart_cgb_flag <= CART_DIN_r1; hdr_cgb_captured <= 1'b1; end
+                16'h0146: begin cart_sgb_flag <= CART_DIN_r1; hdr_sgb_captured <= 1'b1; end
+                16'h014B: begin cart_old_lic  <= CART_DIN_r1; hdr_lic_captured  <= 1'b1; end
+                default:  ;
+            endcase
+        end
+    end
+
+    // isGBC_game: cart supports CGB features
+    wire isGBC_game = hdr_cgb_captured ?
+        (cart_cgb_flag == 8'h80 || cart_cgb_flag == 8'hC0) : 1'b1; // default GBC until detected
+    // isSGB_game: cart has SGB enhancements (SGB flag=0x03 AND licensee=0x33)
+    wire isSGB_game = hdr_sgb_captured && hdr_lic_captured &&
+                      (cart_sgb_flag == 8'h03) && (cart_old_lic == 8'h33);
+    assign isSGB_out = isSGB_game;
+
     gb u_gb(
         .reset(gbreset),
 
         .clk_sys(hclk),
         .ce(ce),
+        .ce_n(ce_n),
         .ce_2x(ce_2x),
+        .ce_4x(ce_4x),
+        .oc_lvl(oc_lvl),
 
-        .isGBC(1'd1),
+        .isGBC(isGBC_game),
+        .isSGB(isSGB_game),
         .real_cgb_boot(1'd0),
         .customPaletteEna(customPaletteEna),
         .paletteBGIn(paletteBGIn),
@@ -343,12 +395,12 @@ module emu_system_top
         .IR_LED(IR_LED),
 
         // lcd interface
-        .lcd_clkena(gb_lcd_clkena),
-        .lcd_data(gb_lcd_data),
-        //      .lcd_data_gb(),
-        .lcd_mode(gb_lcd_mode),
-        .lcd_on(gb_lcd_on),
-        .lcd_vsync(gb_lcd_vsync),
+        .lcd_clkena(gb_raw_lcd_clkena),
+        .lcd_data(gb_raw_lcd_data),
+        .lcd_data_gb(gb_raw_lcd_data_gb),
+        .lcd_mode(gb_raw_lcd_mode),
+        .lcd_on(gb_raw_lcd_on),
+        .lcd_vsync(gb_raw_lcd_vsync),
 
         .joy_p54(joy_p54),
         .joy_din(joy_din),
@@ -403,6 +455,64 @@ module emu_system_top
         .rewind_on(1'd0),
         .rewind_active(1'd0)
     );
+
+    // ----------------------------------------------------------------
+    // Internal GB LCD raw wires (before SGB palette processing)
+    // ----------------------------------------------------------------
+    wire        gb_raw_lcd_clkena;
+    wire [14:0] gb_raw_lcd_data;
+    wire [1:0]  gb_raw_lcd_data_gb;  // 2-bit DMG pixel indices for SGB
+    wire [1:0]  gb_raw_lcd_mode;
+    wire        gb_raw_lcd_on;
+    wire        gb_raw_lcd_vsync;
+
+    // SGB joystick input word (format: Start,Sel,B,A,Right,Left,Up,Down)
+    wire [7:0] joystick_0_w = {
+        BTN_START_filtered, BTN_SEL_filtered,
+        BTN_B_filtered, BTN_A_filtered,
+        BTN_DPAD_RIGHT_filtered_dir, BTN_DPAD_LEFT_filtered_dir,
+        BTN_DPAD_UP_filtered_dir, BTN_DPAD_DOWN_filtered_dir
+    };
+
+    wire [14:0] sgb_lcd_data_w;
+    wire        sgb_lcd_clkena_w;
+    wire [1:0]  sgb_lcd_mode_w;
+    wire        sgb_lcd_on_w;
+    wire        sgb_lcd_vsync_w;
+
+    sgb u_sgb (
+        .reset          (gbreset),
+        .clk_sys        (hclk),
+        .ce             (ce),
+        .sgb_en         (isSGB_game),
+        .tint           (1'b0),
+        .isGBC_game     (isGBC_game),
+        .lcd_clkena     (gb_raw_lcd_clkena),
+        .lcd_data       (gb_raw_lcd_data),
+        .lcd_data_gb    (gb_raw_lcd_data_gb),
+        .lcd_mode       (gb_raw_lcd_mode),
+        .lcd_on         (gb_raw_lcd_on),
+        .lcd_vsync      (gb_raw_lcd_vsync),
+        .joystick_0     (joystick_0_w),
+        .joystick_1     (8'b0),
+        .joystick_2     (8'b0),
+        .joystick_3     (8'b0),
+        .joy_p54        (joy_p54),
+        .joy_do         (sgb_joy_do),
+        .sgb_pal_en     (),
+        .sgb_lcd_data   (sgb_lcd_data_w),
+        .sgb_lcd_clkena (sgb_lcd_clkena_w),
+        .sgb_lcd_mode   (sgb_lcd_mode_w),
+        .sgb_lcd_on     (sgb_lcd_on_w),
+        .sgb_lcd_freeze (),
+        .sgb_lcd_vsync  (sgb_lcd_vsync_w)
+    );
+
+    assign gb_lcd_clkena = sgb_lcd_clkena_w;
+    assign gb_lcd_data   = sgb_lcd_data_w;
+    assign gb_lcd_mode   = sgb_lcd_mode_w;
+    assign gb_lcd_on     = sgb_lcd_on_w;
+    assign gb_lcd_vsync  = sgb_lcd_vsync_w;
     
     audio_filter u_audio_filter
     (

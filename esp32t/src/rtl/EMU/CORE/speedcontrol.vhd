@@ -11,7 +11,9 @@ entity speedcontrol is
       cart_act    : in     std_logic;
       DMA_on      : in     std_logic;
       ce          : out    std_logic := '0';
+      ce_n        : out    std_logic := '0';
       ce_2x       : buffer std_logic := '0';
+      ce_4x       : out    std_logic := '0';
       refresh     : out    std_logic := '0';
       ff_on       : out    std_logic := '0'
    );
@@ -47,7 +49,9 @@ begin
       if falling_edge(clk_sys) then
       
          ce          <= '0';
+         ce_n        <= '0';
          ce_2x       <= '0';
+         ce_4x       <= '0';
          refresh     <= '0';
          
          cart_act_1  <= cart_act;
@@ -70,9 +74,13 @@ begin
                   if (clkdiv = "00") then
                      ce <= '1';
                   end if;
+                  if (clkdiv = "10") then
+                     ce_n <= '1';
+                  end if;
                   if (clkdiv(0) = '0') then
                      ce_2x    <= '1';
                   end if;
+                  ce_4x <= '1';
                end if;
                
             when PAUSED =>
@@ -115,8 +123,11 @@ begin
                   clkdiv(0) <= not clkdiv(0);
                   if (clkdiv(0) = '0') then
                      ce      <= '1';
+                  else
+                     ce_n    <= '1';
                   end if;
                   ce_2x   <= '1';
+                  ce_4x   <= '1';
                end if;
             
             when FASTFORWARDEND =>

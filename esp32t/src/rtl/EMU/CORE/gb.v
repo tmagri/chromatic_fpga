@@ -24,9 +24,13 @@ module gb (
    
     input clk_sys,
     input ce,
+    input ce_n,
     input ce_2x,
+    input ce_4x,
+    input [1:0] oc_lvl,   // 0=1x  1=2x  2=4x
 
     input isGBC,
+    input isSGB,
     input real_cgb_boot,
     input paletteOff,
     input customPaletteEna,
@@ -345,7 +349,13 @@ wire cpu_iorq_n;
 wire cpu_m1_n;
 wire cpu_mreq_n;
 
-wire ce_cpu = cpu_speed ? ce_2x:ce;
+// Guard: never overclock during OAM DMA or the boot ROM.
+// DMA uses tight timing that breaks if the CPU runs faster than the bus.
+// boot_rom_enabled: the boot ROM runs tight timing loops; overclocking it
+//   causes a white-screen crash on first load.
+wire ce_cpu = (dma_rd || boot_rom_enabled) ? ce :
+                            (oc_lvl == 2'd2) ? ce_4x :
+                            (oc_lvl == 2'd1 || cpu_speed) ? ce_2x : ce;
 // when hdma is enabled stop CPU (GBC). Finish read/write before stopping CPU
 wire hdma_cpu_stop = (isGBC & hdma_active & cpu_rd_n & cpu_wr_n);
 wire cpu_clken = ~hdma_cpu_stop & ce_cpu;
@@ -1058,8 +1068,7 @@ assign sel_boot_rom = boot_rom_enabled && (!boot_rom_addr[15:8] || sel_boot_rom_
 
 
 // $000-8FF: GBC
-// $900-9FF: DMG
-// $A00-AFF: SGB
+// $900-9FF: DMG (also used for SGB until a dedicated SGB boot ROM is loaded)
 wire [11:0] boot_addr =
         isGBC ? boot_rom_addr[11:0] :
         { 4'h9, boot_rom_addr[7:0] };

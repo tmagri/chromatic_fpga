@@ -438,6 +438,7 @@ module top #(parameter ISSIMU=0)
     wire [63:0] paletteOBJ0In;
     wire [63:0] paletteOBJ1In;
     wire gbc_mode;
+    wire isSGB_out;
     wire [63:0] gpd;
 
     emu_system_top u_emu_system_top(
@@ -451,7 +452,11 @@ module top #(parameter ISSIMU=0)
         .paletteBGIn(paletteBGIn),
         .paletteOBJ0In(paletteOBJ0In),
         .paletteOBJ1In(paletteOBJ1In),
+        // oc_lvl: bits [15] and [8] of system_control
+        // 2'b00=1x(off)  2'b01=2x  2'b10=4x
+        .oc_lvl({system_control[15], system_control[8]}),
         .gbc_mode(gbc_mode),
+        .isSGB_out(isSGB_out),
         .gpd(gpd),
 
         .BTN_NODIAGONAL(system_control[11]),
