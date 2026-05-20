@@ -422,9 +422,9 @@ end
 wire trn_data_wr = (ce && lcd_clkena && trn_en && &pix_x[2:0] && !tile_number[8]);
 
 // System palette RAM (for PAL_TRN / PAL_SET)
-(* ramstyle="no_rw_check" *) reg [14:0] sys_pal_ram[512*4];
+(* ramstyle="block" *) reg [14:0] sys_pal_ram[2048];
 // Attribute files RAM (for ATTR_TRN / ATTR_SET)
-(* ramstyle="no_rw_check" *) reg [15:0] attr_files_ram[45*45];
+(* ramstyle="block" *) reg [15:0] attr_files_ram[2048];
 
 always @(posedge clk_sys) begin
 	if (trn_data_wr && cmd == CMD_PAL_TRN) begin
@@ -510,8 +510,12 @@ end
 
 // Attribute file storage
 reg [15:0] attr_file_data;
-reg [0:719] attr_file_temp, attr_file;
+(* ramstyle="block" *) reg [1:0] attr_file_temp[512];
+(* ramstyle="block" *) reg [1:0] attr_file[512];
 reg attr_file_ready;
+reg attr_copy_busy;
+reg [8:0] attr_copy_addr;
+reg attr_file_copied;
 
 reg attr_set_busy, attr_blk_busy, attr_lin_busy, attr_div_busy, attr_chr_busy;
 reg [8:0] attr_set_cnt, attr_set_cnt_r;
@@ -539,6 +543,8 @@ always @(posedge clk_sys) begin
 		attr_clear <= 1'b1;
 		attr_set_cnt <= 0;
 		attr_file_ready <= 1;
+		attr_copy_busy <= 0;
+		attr_file_copied <= 0;
 	end else if (ce) begin
 
 		attr_cancel_mask <= 0;
@@ -720,7 +726,25 @@ always @(posedge clk_sys) begin
 		end
 
 		if (attr_file_wr) begin
-			attr_file_temp[attr_tile_no_wr*2 +: 2] <= attr_file_pal_wr;
+			attr_file_temp[attr_tile_no_wr] <= attr_file_pal_wr;
+		end
+
+		if (lcd_off) begin
+			if (attr_file_ready && !attr_file_copied && !attr_copy_busy) begin
+				attr_copy_busy <= 1'b1;
+				attr_copy_addr <= 0;
+			end
+		end else begin
+			attr_file_copied <= 0;
+		end
+
+		if (attr_copy_busy) begin
+			attr_file[attr_copy_addr] <= attr_file_temp[attr_copy_addr];
+			attr_copy_addr <= attr_copy_addr + 1'b1;
+			if (attr_copy_addr == 9'd359) begin
+				attr_copy_busy <= 0;
+				attr_file_copied <= 1'b1;
+			end
 		end
 
 	end
@@ -739,12 +763,9 @@ always @(posedge clk_sys) begin
 
 		if (lcd_off) begin
 			mask_en_r <= mask_en;
-			if (attr_file_ready) begin
-				attr_file <= attr_file_temp;
-			end
 		end
 
-		pal_no <= attr_file[tile_number*2 +: 2];
+		pal_no <= attr_file[tile_number];
 		lcd_data_r <= lcd_data;
 		lcd_data_gb_r <= lcd_data_gb;
 		lcd_clkena_r <= lcd_clkena;
