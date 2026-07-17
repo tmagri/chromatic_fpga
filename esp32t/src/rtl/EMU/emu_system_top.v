@@ -137,10 +137,10 @@ module emu_system_top
     reg [3:0] joy_din;
     wire [1:0] joy_p54;
     wire [3:0] sgb_joy_do;
-    // SGB takes over joy mux when enabled; otherwise use standard GB mux
+    // SGB joypad takeover disabled until SGB LCD path is debugged.
     always@(posedge hclk)
     begin
-        if (isSGB_game) begin
+        if (1'b0) begin
             joy_din <= sgb_joy_do;
         end else begin
             case(joy_p54)
@@ -344,7 +344,7 @@ module emu_system_top
         .ce_4x(ce_4x),
         .oc_lvl(oc_lvl),
 
-        .isGBC(isGBC_game),
+        .isGBC(1'd1),
         .isSGB(isSGB_game),
         .real_cgb_boot(1'd0),
         .customPaletteEna(customPaletteEna),
@@ -508,11 +508,13 @@ module emu_system_top
         .sgb_lcd_vsync  (sgb_lcd_vsync_w)
     );
 
-    assign gb_lcd_clkena = sgb_lcd_clkena_w;
-    assign gb_lcd_data   = sgb_lcd_data_w;
-    assign gb_lcd_mode   = sgb_lcd_mode_w;
-    assign gb_lcd_on     = sgb_lcd_on_w;
-    assign gb_lcd_vsync  = sgb_lcd_vsync_w;
+    // SGB LCD path bypassed — pass gb LCD directly (v18.8 behavior).
+    // SGB module stays instantiated but its outputs are unused until debugged.
+    assign gb_lcd_clkena = gb_raw_lcd_clkena;
+    assign gb_lcd_data   = gb_raw_lcd_data;
+    assign gb_lcd_mode   = gb_raw_lcd_mode;
+    assign gb_lcd_on     = gb_raw_lcd_on;
+    assign gb_lcd_vsync  = gb_raw_lcd_vsync;
     
     audio_filter u_audio_filter
     (
