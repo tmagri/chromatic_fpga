@@ -1,3 +1,5 @@
+# ⚠️ WARNING: OC Mode is highly unstable in this release. This fork is purely experimental and should not be used in production. Specifically, timing issues with Everdrive carts can result in SD card corruption. **Use at your own risk.**
+
 # Chromatic FPGA
 This repository houses the ModRetro Chromatic's FPGA design files.
 
