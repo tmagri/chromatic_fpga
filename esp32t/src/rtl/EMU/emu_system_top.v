@@ -137,10 +137,9 @@ module emu_system_top
     reg [3:0] joy_din;
     wire [1:0] joy_p54;
     wire [3:0] sgb_joy_do;
-    // SGB joypad takeover disabled until SGB LCD path is debugged.
     always@(posedge hclk)
     begin
-        if (1'b0) begin
+        if (sgb_game_detected) begin
             joy_din <= sgb_joy_do;
         end else begin
             case(joy_p54)
@@ -177,6 +176,7 @@ module emu_system_top
         .pause       (sleep_savestate),
         .speedup     (),
         .cart_act    (rd | wr),
+        .save_act    (SAVE_out_ena),
         .DMA_on      (DMA_on),
         .ce          (ce),
         .ce_n        (ce_n),
@@ -210,13 +210,61 @@ module emu_system_top
         begin
             CART_RST_r1 <= CART_RST;
             CART_RST_r2 <= CART_RST_r1;
-            gbreset_ungated <= ~LCD_INIT_DONE ? 1'b1 : ~CART_RST_r2;
+            gbreset_ungated <= ~LCD_INIT_DONE ? 1'b1 : (~CART_RST_r2 | sgb_reboot_req);
             if(~ce_2x_r1 & ce_2x & ce)
                 gbreset <= gbreset_ungated;
                 
             if (MENU_CLOSED & BTN_MENU & BTN_A & BTN_B & BTN_START & BTN_SEL) gbreset <= 1'd1;
             
             if (~POWER_GOOD) gbreset <= 1'b1;
+        end
+    end
+
+    // ----------------------------------------------------------------
+    // SGB double-boot: first boot in GBC mode snoops the cart header.
+    // If an SGB game is detected, trigger a reboot in DMG mode so the
+    // game sends SGB palette commands (games only do this when they
+    // believe they are running on original DMG hardware, A=$01).
+    // ----------------------------------------------------------------
+    reg        sgb_dmg_boot;      // latched: 1 = boot in DMG mode
+    reg        sgb_game_detected; // latched: 1 = SGB game (for palette/joy)
+    reg        sgb_reboot_req;    // asserted to trigger SGB reboot reset
+    reg [15:0] sgb_reboot_timer;  // holds reset for ~1.5 ms
+
+    always @(posedge hclk or negedge reset_n) begin
+        if (~reset_n) begin
+            sgb_dmg_boot   <= 1'b0;
+            sgb_game_detected <= 1'b0;
+            sgb_reboot_req <= 1'b0;
+            sgb_reboot_timer <= 16'd0;
+        end else begin
+            // Cart removed/inserted (CART_RST low) → clear for fresh detection
+            if (~CART_RST_r2) begin
+                sgb_dmg_boot     <= 1'b0;
+                sgb_game_detected <= 1'b0;
+                sgb_reboot_req   <= 1'b0;
+                sgb_reboot_timer <= 16'd0;
+            end else begin
+                // Only SGB games reboot to DMG mode (for SGB palette support).
+                // Non-SGB DMG games stay in GBC mode (GBC compat palette).
+                if (isSGB_game && !isGBC_game && !sgb_dmg_boot && !sgb_reboot_req && (sgb_reboot_timer == 0)) begin
+                    sgb_reboot_req   <= 1'b1;
+                    sgb_reboot_timer <= 16'd50000;
+                    sgb_game_detected <= isSGB_game;
+                end
+
+                // Latch DMG mode only once gbreset is confirmed active
+                if (sgb_reboot_req && gbreset && !sgb_dmg_boot) begin
+                    sgb_dmg_boot <= 1'b1;
+                end
+
+                // Countdown and release reset
+                if (sgb_reboot_timer != 0) begin
+                    sgb_reboot_timer <= sgb_reboot_timer - 1'b1;
+                    if (sgb_reboot_timer == 16'd1)
+                        sgb_reboot_req <= 1'b0;
+                end
+            end
         end
     end
     
@@ -248,7 +296,10 @@ module emu_system_top
        .CART_RD         (CART_RD        ),
        .CART_WR         (CART_WR        ),
        .CART_DATA_DIR_E (CART_DATA_DIR_E),
-       .CART_DIN_r1     (CART_DIN_r1    )
+       .CART_DIN_r1     (CART_DIN_r1    ),
+       .cart_busy       (cart_busy      ),
+       .reset           (reset),  // Or whatever the main reset signal is called here
+       .speed           (speed)   // Connect the speed wire coming from the gb module
     );
 
     wire sc_int_clock2;
@@ -276,13 +327,23 @@ module emu_system_top
     wire serial_data_in = LINK_IN_r1;
     assign LINK_OUT = serial_data_out_r1;
 
+    // Declared early: speedcontrol.save_act and the ddram channel all
+    // reference SAVE_out_ena, but speedcontrol is instantiated above the
+    // gb module that drives it. Verilog allows forward use but we declare
+    // it here for clarity and to avoid implicit-1-bit traps.
     wire [63:0] SAVE_out_Din  ;
     wire [63:0] SAVE_out_Dout ;
     wire [25:0] SAVE_out_Adr  ;
-    wire SAVE_out_rnw  ;                    
-    wire SAVE_out_ena  ;                                    
-    wire SAVE_out_done ; 
-    
+    wire SAVE_out_rnw  ;
+    wire SAVE_out_ena  ;
+    wire SAVE_out_done ;
+
+    // cart_busy: high while the physical cartridge bus is mid-cycle.
+    // Exposed up to top-level so the system monitor / save-state arbiter
+    // can avoid kicking a save while the cart bus is in flight (which
+    // would otherwise race against CPU reads on the Gowin BRAM path).
+    wire cart_busy;
+
     reg ss_load = 1'b0;
     reg gbreset_1 = 1'b0;
     
@@ -329,10 +390,12 @@ module emu_system_top
     // isGBC_game: cart supports CGB features
     wire isGBC_game = hdr_cgb_captured ?
         (cart_cgb_flag == 8'h80 || cart_cgb_flag == 8'hC0) : 1'b1; // default GBC until detected
-    // isSGB_game: cart has SGB enhancements (SGB flag=0x03 AND licensee=0x33)
+    // isSGB_game: cart has SGB enhancements (SGB flag=0x03 AND licensee=0x33).
+    // After the SGB double-boot, the DMG boot ROM doesn't re-read the header,
+    // so sgb_dmg_boot preserves the detection from the first (GBC) boot.
     wire isSGB_game = hdr_sgb_captured && hdr_lic_captured &&
                       (cart_sgb_flag == 8'h03) && (cart_old_lic == 8'h33);
-    assign isSGB_out = isSGB_game;
+    assign isSGB_out = sgb_game_detected;
 
     gb u_gb(
         .reset(gbreset),
@@ -344,7 +407,7 @@ module emu_system_top
         .ce_4x(ce_4x),
         .oc_lvl(oc_lvl),
 
-        .isGBC(1'd1),
+        .isGBC(sgb_dmg_boot ? 1'b0 : 1'b1),
         .isSGB(isSGB_game),
         .real_cgb_boot(1'd0),
         .customPaletteEna(customPaletteEna),
@@ -365,6 +428,7 @@ module emu_system_top
         .cart_do(CART_DIN_r1),
         .cart_di(CART_DOUT),
         .cart_oe(cart_oe),
+        .cart_busy(cart_busy),
         .TSTATEo(TSTATEo),
         .TSTATE1(TSTATE1),
         .TSTATE2(TSTATE2),
@@ -474,6 +538,8 @@ module emu_system_top
         BTN_DPAD_UP_filtered_dir, BTN_DPAD_DOWN_filtered_dir
     };
 
+    wire [14:0] sgb_pal_out_w;
+    wire        sgb_pal_en_w;
     wire [14:0] sgb_lcd_data_w;
     wire        sgb_lcd_clkena_w;
     wire [1:0]  sgb_lcd_mode_w;
@@ -484,9 +550,9 @@ module emu_system_top
         .reset          (gbreset),
         .clk_sys        (hclk),
         .ce             (ce),
-        .sgb_en         (isSGB_game),
+        .sgb_en         (sgb_game_detected),
         .tint           (1'b0),
-        .isGBC_game     (isGBC_game),
+        .isGBC_game     (sgb_game_detected ? 1'b0 : isGBC_game),
         .lcd_clkena     (gb_raw_lcd_clkena),
         .lcd_data       (gb_raw_lcd_data),
         .lcd_data_gb    (gb_raw_lcd_data_gb),
@@ -499,8 +565,9 @@ module emu_system_top
         .joystick_3     (8'b0),
         .joy_p54        (joy_p54),
         .joy_do         (sgb_joy_do),
-        .sgb_pal_en     (),
-        .sgb_lcd_data   (sgb_lcd_data_w),
+        .sgb_pal_out    (sgb_pal_out_w),
+        .pal_read_idx   (gb_raw_lcd_data_gb),
+        .sgb_pal_en     (sgb_pal_en_w),
         .sgb_lcd_clkena (sgb_lcd_clkena_w),
         .sgb_lcd_mode   (sgb_lcd_mode_w),
         .sgb_lcd_on     (sgb_lcd_on_w),
@@ -508,10 +575,13 @@ module emu_system_top
         .sgb_lcd_vsync  (sgb_lcd_vsync_w)
     );
 
-    // SGB LCD path bypassed — pass gb LCD directly (v18.8 behavior).
-    // SGB module stays instantiated but its outputs are unused until debugged.
+    // Direct video path with optional SGB palette overlay.
+    // Control signals are always direct (no SGB pipeline delay).
+    // Data is replaced with SGB palette color when palette is active.
+    wire use_sgb_pal = sgb_game_detected & sgb_pal_en_w;
+
     assign gb_lcd_clkena = gb_raw_lcd_clkena;
-    assign gb_lcd_data   = gb_raw_lcd_data;
+    assign gb_lcd_data   = use_sgb_pal ? sgb_pal_out_w : gb_raw_lcd_data;
     assign gb_lcd_mode   = gb_raw_lcd_mode;
     assign gb_lcd_on     = gb_raw_lcd_on;
     assign gb_lcd_vsync  = gb_raw_lcd_vsync;

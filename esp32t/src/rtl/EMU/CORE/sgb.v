@@ -27,6 +27,10 @@ module sgb (
 	input [1:0]  joy_p54,
 	output [3:0] joy_do,
 
+	// External palette read port (for combinational overlay outside the module)
+	output [14:0] sgb_pal_out,
+	input  [1:0]  pal_read_idx,
+
 	output reg        sgb_pal_en,
 	output reg [14:0] sgb_lcd_data,
 	output reg        sgb_lcd_clkena,
@@ -77,6 +81,9 @@ reg [1:0] pal0123_no, pal0123_col_no;
 reg [14:0] pal_color;
 reg pal0123_wr;
 
+// SGB packet detection state machine (SameBoy-style 3-step handshake)
+reg ready_for_pulse, ready_for_write, ready_for_stop;
+
 reg [8:0] sys_pal_no[4];
 reg [5:0] attr_file_no;
 reg [1:0] mask_en;
@@ -111,30 +118,44 @@ always @(posedge clk_sys) begin
 		data_set_cnt <= 0;
 		mask_en <= 0;
 		packet_end <= 1'b1;
-		mlt_ctrl <= 0;
-	 end else if (ce) begin
+ 		mlt_ctrl <= 0;
+ 		ready_for_pulse <= 0;
+ 		ready_for_write <= 0;
+ 		ready_for_stop <= 0;
+ 	 end else if (ce) begin
 		old_p15 <= p15;
 		old_p14 <= p14;
 
 		if (sgb_en) begin
-
-			// Reset pulse
-			if (~p15 & ~p14) begin
-				{cnt, byte_cnt, packet_end} <= 0;
-			end
-
-			if ( old_p15 & old_p14 & (p15 ^ p14) ) begin
-				if (~packet_end) begin
-					data <= {~p15,data[7:1]};
-					cnt <= cnt + 1'b1;
-					if (&cnt) byte_done <= 1'b1;
+			// SameBoy-style state machine: requires 3-step handshake
+			// ($30 pulse → $00 write → $10/$20 bit) to accept each bit.
+			// Normal joypad scanning never writes $00, so no false bits.
+			case ({p15, p14})
+				2'b11: begin // $30 — idle/pulse
+					ready_for_pulse <= 1;
 				end
-			end
 
-			// Corrupt packet. p15 and p14 should both go high after one is low.
-			if ( (old_p15 ^ p15) & (old_p15 ^ old_p14) & (p15 ^ p14) ) begin
-				packet_end <= 1'b1;
-			end
+				2'b00: begin // $00 — packet start (requires preceding pulse)
+					if (ready_for_pulse) begin
+						ready_for_write <= 1;
+						ready_for_pulse <= 0;
+						ready_for_stop <= 0;
+						cnt <= 0;
+						byte_cnt <= 0;
+						packet_end <= 0;
+					end
+				end
+
+				2'b01, 2'b10: begin // $10 (bit 1) or $20 (bit 0)
+					if (ready_for_pulse && ready_for_write && !ready_for_stop) begin
+						data <= {~p15, data[7:1]};
+						cnt <= cnt + 1'b1;
+						ready_for_pulse <= 0;
+						if (&cnt) byte_done <= 1'b1;
+						if (&cnt && &byte_cnt) ready_for_stop <= 1;
+					end
+				end
+			endcase
 		end
 
 		trn_start <= 0;
@@ -161,7 +182,8 @@ always @(posedge clk_sys) begin
 
 			case (cmd)
 				CMD_MLT_REQ: begin
-					if (byte_cnt == 5'd1) mlt_ctrl <= data[1:0];
+					if (byte_cnt == 5'd1)
+						mlt_ctrl <= (data[1:0] == 2'd2) ? 2'd3 : data[1:0];
 				end
 				CMD_CHR_TRN,
 				CMD_PCT_TRN,
@@ -309,9 +331,7 @@ always @(posedge clk_sys) begin
 					end
 				end
 				CMD_MASK_EN: begin
-					if (byte_cnt == 5'd1) begin
-						mask_en <= data[1:0];
-					end
+					if (byte_cnt == 5'd1) mask_en <= data[1:0];
 				end
 			endcase
 
@@ -346,7 +366,7 @@ end
 
 assign joy_do = (sgb_en & p15 & p14) ? ~{2'b00,joypad_id} : joy_data;
 
-wire [3:0] joy_dir     = ~{ joystick[2], joystick[3], joystick[1], joystick[0] } | {4{p14}};
+wire [3:0] joy_dir     = ~{ joystick[0], joystick[1], joystick[2], joystick[3] } | {4{p14}};
 wire [3:0] joy_buttons = ~{ joystick[7], joystick[6], joystick[5], joystick[4] } | {4{p15}};
 wire [3:0] joy_data = joy_dir & joy_buttons;
 
@@ -791,5 +811,9 @@ always @(posedge clk_sys) begin
 		sgb_lcd_vsync <= lcd_vsync_r;
 	end
 end
+
+// External palette read port — combinational lookup with R/B swap for BGR555
+wire [14:0] _pal_raw = palette[0][pal_read_idx*15 +: 15];
+assign sgb_pal_out = {_pal_raw[4:0], _pal_raw[9:5], _pal_raw[14:10]};
 
 endmodule

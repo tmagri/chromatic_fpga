@@ -9,6 +9,7 @@ entity speedcontrol is
       pause       : in     std_logic;
       speedup     : in     std_logic;
       cart_act    : in     std_logic;
+      save_act    : in     std_logic;
       DMA_on      : in     std_logic;
       ce          : out    std_logic := '0';
       ce_n        : out    std_logic := '0';
@@ -66,7 +67,7 @@ begin
                if (pause = '1' and clkdiv = "11" and cart_act = '0') then
                   state       <= PAUSED;
                   unpause_cnt <= 0;
-               elsif (speedup = '1' and pause = '0' and DMA_on = '0' and clkdiv = "00") then
+               elsif (speedup = '1' and pause = '0' and DMA_on = '0' and save_act = '0' and clkdiv = "00") then
                   state           <= FASTFORWARDSTART;
                   fastforward_cnt <= 0;
                else
@@ -105,7 +106,7 @@ begin
                end if;
 
             when FASTFORWARD =>
-               if (pause = '1' or speedup = '0' or DMA_on = '1') then
+               if (pause = '1' or speedup = '0' or DMA_on = '1' or save_act = '1') then
                   state           <= FASTFORWARDEND;
                   fastforward_cnt <= 0;
                   if (clkdiv(0) = '1') then

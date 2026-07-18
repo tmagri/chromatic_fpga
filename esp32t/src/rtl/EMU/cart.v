@@ -27,7 +27,14 @@ module cart
     output  reg         CART_RD,
     output  reg         CART_WR = 1'd1,
     output              CART_DATA_DIR_E,
-    output  reg [7:0]   CART_DIN_r1
+    output  reg [7:0]   CART_DIN_r1,
+    // High while a physical cartridge bus cycle is in flight (counter > 0
+    // and CPU has asserted rd/wr). Lets the owning core gate overclock or
+    // insert wait states so the CPU never advances past T3 before the ROM
+    // has had its full tACC window.
+    output              cart_busy,
+    input reset,  // Add this (if a reset port doesn't already exist)
+    input speed   // Add this to pass the DMG/GBC speed state
 );
 
     reg CART_DATA_DIR = 1'd0;
@@ -54,6 +61,20 @@ module cart
     always@(posedge pclk)
         if(aup|cpu_stop|~cpu_halt|DMA_on)
             CART_A <= a;
+
+    // cart_busy: asserted while the physical cartridge bus is mid-cycle.
+    // Active from when a CPU/DMA/HDMA master asserts rd/wr until the
+    // counter wraps back to its idle state. Used by the owning core to
+    // avoid overclocking through a cart access and to inhibit fast-forward
+    // (so DMA doesn't get starved of bus bandwidth).
+    // During DMG-speed accesses the bus needs ~16 hclk cycles (1 us);
+    // during GBC double-speed accesses ~8 hclk cycles (0.5 us). The
+    // signal therefore stays asserted longer than one ce_2x/ce_4x pulse,
+    // guaranteeing the CPU sees it before sampling at T3.
+    reg cart_busy_r;
+    always@(posedge hclk)
+        cart_busy_r <= ~gbreset & (rd | wr | DMA_on | hdma_active) & (counter >= 4'd1);
+    assign cart_busy = cart_busy_r;
     
     reg DMA_on_r1;
     always@(posedge hclk)

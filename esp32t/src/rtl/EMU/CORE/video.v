@@ -1106,7 +1106,8 @@ assign paletteCustomOBJ[15] = paletteOBJ1In[63:56];
 // apply bg palette
 wire [2:0] palette_index_gb = palette_index[2:0];
 wire [14:0] gbc_paletteBG = isGBC ? {bgpd[palette_index+1][6:0], bgpd[palette_index]} : // gbc
-                                    {13'd0, bgp_data};
+                                    bgp_data[1] ? (bgp_data[0] ? 15'h0000 : 15'h294A) :
+                                                   (bgp_data[0] ? 15'h56B5 : 15'h7FFF);
 wire [14:0] pix_rgb_data = (customPaletteEna && ~isGBC_mode) ? {paletteCustomBG[palette_index_gb+1][6:0], paletteCustomBG[palette_index_gb]} : // custom
                                                                 gbc_paletteBG;
 
@@ -1116,7 +1117,8 @@ wire [5:0] sprite_palette_index = isGBC_mode ? {spr_cgb_pal_out, sprite_pixel_da
                                                {sprite_pixel_cmap, obp_data, 1'b0}; //GB game in GBC mode
 
 wire [14:0] gbc_paletteSprite = isGBC ? {obpd[sprite_palette_index+1][6:0], obpd[sprite_palette_index]} : // gbc
-                                        {13'd0, obp_data};
+                                        obp_data[1] ? (obp_data[0] ? 15'h0000 : 15'h294A) :
+                                                       (obp_data[0] ? 15'h56B5 : 15'h7FFF);
 wire [14:0] sprite_pix = (customPaletteEna && ~isGBC_mode) ? {paletteCustomOBJ[sprite_palette_index+1][6:0], paletteCustomOBJ[sprite_palette_index]} : // custom
                                                               gbc_paletteSprite;
 

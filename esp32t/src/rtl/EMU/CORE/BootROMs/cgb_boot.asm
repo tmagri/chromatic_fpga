@@ -920,6 +920,11 @@ GetPaletteIndex:
     ldh [TitleChecksum], a
     ld b, a
 
+    ; FPGA header snooping: read SGB flag and licensee code
+    ; so the FPGA can detect SGB games and reboot in DMG mode.
+    ld a, [$0146]
+    ld a, [$014B]
+
     ; c = 0
     ld hl, TitleChecksums
 
