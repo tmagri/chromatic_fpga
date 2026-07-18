@@ -349,11 +349,16 @@ wire cpu_iorq_n;
 wire cpu_m1_n;
 wire cpu_mreq_n;
 
-// Guard: never overclock during OAM DMA or the boot ROM.
-// DMA uses tight timing that breaks if the CPU runs faster than the bus.
-// boot_rom_enabled: the boot ROM runs tight timing loops; overclocking it
-//   causes a white-screen crash on first load.
-wire ce_cpu = (dma_rd || boot_rom_enabled) ? ce :
+// Detect CPU cart bus accesses that must run at 1x during overclock.
+// Registered to break the combinational loop through the T80 bus signals.
+reg cart_cpu_access;
+always @(posedge clk_sys)
+    cart_cpu_access <= ~cpu_mreq_n & (~cpu_rd_n | ~cpu_wr_n) & (sel_rom | sel_cram);
+
+// Guard: never overclock during cart bus access, OAM DMA, or boot ROM.
+// Cart guard only active during overclock (oc_lvl != 0) to avoid affecting
+// normal GBC double-speed operation.
+wire ce_cpu = (dma_rd || boot_rom_enabled || (|oc_lvl && cart_cpu_access)) ? ce :
                             (oc_lvl == 2'd2) ? ce_4x :
                             (oc_lvl == 2'd1 || cpu_speed) ? ce_2x : ce;
 // when hdma is enabled stop CPU (GBC). Finish read/write before stopping CPU
