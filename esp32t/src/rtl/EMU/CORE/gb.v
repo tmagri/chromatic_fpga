@@ -368,8 +368,21 @@ end
 // Force native speed for DMA, BootROM, and physical cartridge accesses
 wire force_native = dma_rd || hdma_active || boot_rom_enabled || cart_access_pending;
 
+// gbc_snd runs at ce_2x. In 4x OC the CPU runs at ce_4x, so an audio
+// register access could land on a non-ce_2x tick and the audio module
+// would never see it. Detect the access at T1 (address is stable from
+// T1) and drop ce_cpu to ce_2x for the entire machine cycle.
+wire audio_addr_match = sel_audio;
+reg   audio_access_pending;
+always @(posedge clk_sys) begin
+   if (TSTATE1)
+      audio_access_pending <= audio_addr_match;
+end
+wire audio_slow = (oc_lvl == 2'd2) & audio_access_pending;
+
 // Clean, glitch-free clock enable. 
 wire ce_cpu = force_native ? (cpu_speed ? ce_2x : ce) :
+              audio_slow   ? ce_2x :
               (oc_lvl == 2'd2) ? ce_4x :
               (oc_lvl == 2'd1 || cpu_speed) ? ce_2x : ce;
 
