@@ -297,9 +297,7 @@ module emu_system_top
        .CART_WR         (CART_WR        ),
        .CART_DATA_DIR_E (CART_DATA_DIR_E),
        .CART_DIN_r1     (CART_DIN_r1    ),
-       .cart_busy       (cart_busy      ),
-       .reset           (reset),  // Or whatever the main reset signal is called here
-       .speed           (speed)   // Connect the speed wire coming from the gb module
+       .cart_busy       (cart_busy      )
     );
 
     wire sc_int_clock2;

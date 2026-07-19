@@ -353,33 +353,23 @@ wire cpu_iorq_n;
 wire cpu_m1_n;
 wire cpu_mreq_n;
 
-// Detect CPU cart-bound machine cycles early, at T1, using the address
-// bus (which is stable from T1 onwards — one T-state before rd_n/wr_n/
-// mreq_n assert at T2). This lets ce_cpu drop to 1x for the entire cart
-// machine cycle, giving the physical cartridge bus the same setup/sample
-// window it has in normal (1x) operation. Required because the registered
-// mreq/rd/wr detect below only fires at T2 — too late under 4x overclock,
-// leaving the cart bus only ~2 hclk cycles of nCS-active time.
-//
-// Registered on posedge clk_sys but only updated during TSTATE1, so the
-// held value stays valid for the whole machine cycle (T2/T3/T4). This
-// breaks the combinational loop through the T80 bus signals.
-wire cart_addr_match = sel_rom | sel_cram;
-reg  cart_access_pending;
-always @(posedge clk_sys)
-   if (TSTATE1)
-      cart_access_pending <= cart_addr_match;
-
-// Late detect (legacy safety net) — covers edges T1 sampling can miss
-// (interrupt acknowledge cycles, restart vectors). ORed with early detect.
-reg cart_cpu_access;
-always @(posedge clk_sys)
-   cart_cpu_access <= ~cpu_mreq_n & (~cpu_rd_n | ~cpu_wr_n) & (sel_rom | sel_cram);
-
-// 4. CPU Clock Enable Mux
 // Clean, glitch-free clock enable. 
 // DMA and BootROM always run at 1x. Overclock is applied cleanly otherwise.
-wire ce_cpu = (dma_rd || hdma_active || boot_rom_enabled) ? ce :
+// Detect CPU cart-bound machine cycles early, at T1, using the address
+// bus (which is stable from T1 onwards). This gives us a perfectly
+// registered flag to drop ce_cpu to native speed for the entire cycle.
+wire cart_addr_match = sel_rom | sel_cram;
+reg  cart_access_pending;
+always @(posedge clk_sys) begin
+   if (TSTATE1)
+      cart_access_pending <= cart_addr_match;
+end
+
+// Force native speed for DMA, BootROM, and physical cartridge accesses
+wire force_native = dma_rd || hdma_active || boot_rom_enabled || cart_access_pending;
+
+// Clean, glitch-free clock enable. 
+wire ce_cpu = force_native ? (cpu_speed ? ce_2x : ce) :
               (oc_lvl == 2'd2) ? ce_4x :
               (oc_lvl == 2'd1 || cpu_speed) ? ce_2x : ce;
 
@@ -405,49 +395,15 @@ always @(posedge clk_sys) begin
 end
 assign cpu_wr_n_edge = ~(old_cpu_wr_n & ~cpu_wr_n);
 
-
 wire genie_ovr;
 wire [7:0] genie_data;
 wire WRITE_CYCLE;
-
-// --------------------------------------------------------------------
-// ------------------- Overclock Wait-State Generator -----------------
-// --------------------------------------------------------------------
-// Physical cartridges require strict setup/hold times (tACC).
-// We use the CPU's native WAIT_n pin to stretch the read/write pulses 
-// to match standard physical bus timing, safely stalling the CPU pipeline.
-reg [4:0] cart_ws_cnt;
-reg cart_wait;
-// Detect active read/write to the cartridge ROM or SRAM
-wire cart_access = (~cpu_rd_n || ~cpu_wr_n) && (sel_rom || sel_cram);
-reg cart_access_r;
-always @(posedge clk_sys) begin
-    if (reset) begin
-        cart_ws_cnt <= 0;
-        cart_wait <= 0;
-        cart_access_r <= 0;
-    end else begin
-        cart_access_r <= cart_access;
-        // Trigger wait state on the exact falling edge of RD/WR
-        if (cart_access && !cart_access_r && (|oc_lvl)) begin
-            // DMG physical bus needs ~16 clk_sys ticks of active RD/WR
-            // GBC (cpu_speed=1) physical bus needs ~8 clk_sys ticks
-            cart_ws_cnt <= cpu_speed ? 5'd8 : 5'd16;
-            cart_wait <= 1'b1;
-        end 
-        else if (cart_ws_cnt > 0) begin
-            cart_ws_cnt <= cart_ws_cnt - 1'b1;
-            // Deassert wait slightly early to meet Z80 sampling edge
-            if (cart_ws_cnt == 5'd1) cart_wait <= 1'b0; 
-        end
-    end
-end
 
 GBse cpu (
     .RESET_n           ( !reset_ss        ),
     .CLK_n             ( clk_sys         ),
     .CLKEN             ( cpu_clken       ),
-    .WAIT_n            ( ~cart_wait       ),
+    .WAIT_n            ( 1'b1            ),
     .INT_n             ( irq_n           ),
     .NMI_n             ( 1'b1            ),
     .BUSRQ_n           ( 1'b1            ),
@@ -520,7 +476,13 @@ end
 // --------------------------------------------------------------------
 // --------------------- Speed Toggle KEY1 (GBC)-----------------------
 // --------------------------------------------------------------------
-assign speed = cpu_speed;
+
+// The physical cartridge controller (cart.v) changes its sample timing
+// based on the 'speed' flag. If we overclock the CPU to 2x or 4x, we MUST
+// tell the cart controller to use the faster GBC sample window, otherwise
+// the CPU cycle will end before cart.v even tries to latch the data!
+wire is_overclocked = (oc_lvl == 2'd1 || oc_lvl == 2'd2) && !boot_rom_enabled && !dma_rd && !hdma_active;
+assign speed = cpu_speed | is_overclocked;
 
 assign SS_Top_BACK[3] = cpu_speed;
 assign SS_Top_BACK[4] = prepare_switch;

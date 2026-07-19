@@ -32,9 +32,7 @@ module cart
     // and CPU has asserted rd/wr). Lets the owning core gate overclock or
     // insert wait states so the CPU never advances past T3 before the ROM
     // has had its full tACC window.
-    output              cart_busy,
-    input reset,  // Add this (if a reset port doesn't already exist)
-    input speed   // Add this to pass the DMG/GBC speed state
+    output              cart_busy
 );
 
     reg CART_DATA_DIR = 1'd0;
