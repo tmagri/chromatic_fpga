@@ -686,7 +686,7 @@ module top #(parameter ISSIMU=0)
         .BTN_START(BTN_START_filtered),
         .menuDisabled(menuDisabled),
         .LCD_BACKLIGHT_INIT(LCD_BACKLIGHT_INIT),
-        .LCD_INIT_DONE(LCD_INIT_DONE & ~boot_rom_enabled),
+        .LCD_INIT_DONE(LCD_INIT_DONE & (~boot_rom_enabled | isSGB_out)),
         .LCD_PWM(LCD_PWM),
         .hAdcReq_ext(hAdcReq_ext),
         //.hAdcValue_r1(voltageSim),

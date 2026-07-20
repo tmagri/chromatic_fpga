@@ -147,12 +147,18 @@ always @(posedge clk_sys) begin
 				end
 
 				2'b01, 2'b10: begin // $10 (bit 1) or $20 (bit 0)
-					if (ready_for_pulse && ready_for_write && !ready_for_stop) begin
-						data <= {~p15, data[7:1]};
-						cnt <= cnt + 1'b1;
-						ready_for_pulse <= 0;
-						if (&cnt) byte_done <= 1'b1;
-						if (&cnt && &byte_cnt) ready_for_stop <= 1;
+					if (ready_for_pulse && ready_for_write) begin
+						if (ready_for_stop) begin
+							ready_for_write <= 0;
+							ready_for_stop <= 0;
+							ready_for_pulse <= 0;
+						end else begin
+							data <= {~p15, data[7:1]};
+							cnt <= cnt + 1'b1;
+							ready_for_pulse <= 0;
+							if (&cnt) byte_done <= 1'b1;
+							if (&cnt && &byte_cnt) ready_for_stop <= 1;
+						end
 					end
 				end
 			endcase
