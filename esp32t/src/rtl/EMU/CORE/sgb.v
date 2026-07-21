@@ -68,9 +68,6 @@ reg [1:0] pal0123_no, pal0123_col_no;
 reg [14:0] pal_color;
 reg pal0123_wr;
 
-// SGB packet detection state machine (SameBoy-style 3-step handshake)
-reg ready_for_pulse, ready_for_write, ready_for_stop;
-
 reg [8:0] sys_pal_no[4];
 reg [1:0] mask_en;
 reg cancel_mask;
@@ -84,49 +81,30 @@ always @(posedge clk_sys) begin
 		mask_en <= 0;
 		packet_end <= 1'b1;
  		mlt_ctrl <= 0;
- 		ready_for_pulse <= 0;
- 		ready_for_write <= 0;
- 		ready_for_stop <= 0;
 	 end else if (ce) begin
 		old_p15 <= p15;
 		old_p14 <= p14;
 
 		if (sgb_en) begin
-			// SameBoy-style state machine: requires 3-step handshake
-			// ($30 pulse → $00 write → $10/$20 bit) to accept each bit.
-			// Normal joypad scanning never writes $00, so no false bits.
-			case ({p15, p14})
-				2'b11: begin // $30 — idle/pulse
-					ready_for_pulse <= 1;
-				end
+			// MiSTer edge-based packet detection:
+			// $00 unconditionally resets counters (packet start)
+			if (~p15 & ~p14) begin
+				{cnt, byte_cnt, packet_end} <= 0;
+			end
 
-				2'b00: begin // $00 — packet start (requires preceding pulse)
-					if (ready_for_pulse) begin
-						ready_for_write <= 1;
-						ready_for_pulse <= 0;
-						ready_for_stop <= 0;
-						cnt <= 0;
-						byte_cnt <= 0;
-						packet_end <= 0;
-					end
+			// Data bit: transition from $30 (old_p15=1,old_p14=1) to $10/$20
+			if (old_p15 & old_p14 & (p15 ^ p14)) begin
+				if (~packet_end) begin
+					data <= {~p15, data[7:1]};
+					cnt <= cnt + 1'b1;
+					if (&cnt) byte_done <= 1'b1;
 				end
+			end
 
-				2'b01, 2'b10: begin // $10 (bit 1) or $20 (bit 0)
-					if (ready_for_pulse && ready_for_write) begin
-						if (ready_for_stop) begin
-							ready_for_write <= 0;
-							ready_for_stop <= 0;
-							ready_for_pulse <= 0;
-						end else begin
-							data <= {~p15, data[7:1]};
-							cnt <= cnt + 1'b1;
-							ready_for_pulse <= 0;
-							if (&cnt) byte_done <= 1'b1;
-							if (&cnt && &byte_cnt) ready_for_stop <= 1;
-						end
-					end
-				end
-			endcase
+			// Corrupt packet: $10<->$20 without going through $30 first
+			if ((old_p15 ^ p15) & (old_p15 ^ old_p14) & (p15 ^ p14)) begin
+				packet_end <= 1'b1;
+			end
 		end
 
 		trn_start <= 0;
@@ -252,6 +230,15 @@ wire [7:0] joystick =
 wire lcd_off = !lcd_on || (lcd_mode == 2'd01);
 reg old_lcd_off;
 
+// lcd_clkena from gb.v is a 1-cycle pulse on ce edges, zeroed on non-ce
+// edges. At 1x DMG speed ce fires every 4 hclk, so the pulse is gone
+// before the SGB scanner's next ce edge. Capture and hold it.
+reg lcd_clkena_captured;
+always @(posedge clk_sys) begin
+	if (lcd_clkena) lcd_clkena_captured <= 1'b1;
+	else if (ce)   lcd_clkena_captured <= 1'b0;
+end
+
 // LCD frame scanner — tracks pixel position and collects pixel data
 // for PAL_TRN transfers.
 reg trn_en, trn_wait, frame_end;
@@ -276,7 +263,7 @@ always @(posedge clk_sys) begin
 			frame_end <= 1'b1;
 		end
 
-		if(lcd_clkena & ~lcd_off) begin
+		if(lcd_clkena_captured & ~lcd_off) begin
 			pix_x <= pix_x + 1'b1;
 			if (pix_x == 8'd159) begin
 				pix_x <= 0;
@@ -307,7 +294,7 @@ always @(posedge clk_sys) begin
 
 end
 
-wire trn_data_wr = (ce && lcd_clkena && trn_en && &pix_x[2:0] && !tile_number[8]);
+wire trn_data_wr = (ce && lcd_clkena_captured && trn_en && &pix_x[2:0] && !tile_number[8]);
 
 // System palette RAM (for PAL_TRN / PAL_SET)
 (* ramstyle="block" *) reg [14:0] sys_pal_ram[2048];
@@ -424,7 +411,7 @@ always @(posedge clk_sys) begin
 		sgb_lcd_mode <= lcd_mode_r;
 		sgb_lcd_on <= lcd_on_r;
 		sgb_lcd_freeze <= sgb_en && mask_en_r == 2'd1;
-		sgb_pal_en <= sgb_en & ( (output_sgb_pal & ~tint & ~isGBC_game) || |mask_en_r);
+		sgb_pal_en <= sgb_en & output_sgb_pal & ~tint & ~isGBC_game;
 		sgb_lcd_vsync <= lcd_vsync_r;
 	end
 end
