@@ -1,6 +1,6 @@
 // sgb.v - Super GameBoy palette support for Chromatic FPGA
 // Adapted from MiSTer Gameboy_MiSTer/rtl/sgb.v
-// Border rendering removed; SGB palette colorisation and attribute mapping retained.
+// Border rendering and attribute mapping removed; SGB palette colorisation retained.
 // Original copyright applies — GPL-3.0 license.
 
 module sgb (
@@ -44,21 +44,10 @@ localparam CMD_PAL01    = 5'h00;
 localparam CMD_PAL23    = 5'h01;
 localparam CMD_PAL03    = 5'h02;
 localparam CMD_PAL12    = 5'h03;
-localparam CMD_ATTR_BLK = 5'h04;
-localparam CMD_ATTR_LIN = 5'h05;
-localparam CMD_ATTR_DIV = 5'h06;
-localparam CMD_ATTR_CHR = 5'h07;
 localparam CMD_PAL_SET  = 5'h0A;
 localparam CMD_PAL_TRN  = 5'h0B;
 localparam CMD_MLT_REQ  = 5'h11;
-localparam CMD_CHR_TRN  = 5'h13;
-localparam CMD_PCT_TRN  = 5'h14;
-localparam CMD_ATTR_TRN = 5'h15;
-localparam CMD_ATTR_SET = 5'h16;
 localparam CMD_MASK_EN  = 5'h17;
-// Cart-header transfer commands used by the SGB BIOS
-localparam CMD_CART_1   = 5'h1E;
-localparam CMD_CART_2   = 5'h1F;
 
 
 wire p14 = joy_p54[0];
@@ -70,12 +59,10 @@ reg [3:0] byte_cnt;
 reg [2:0] cnt, packet_cnt;
 reg [2:0] length;
 reg byte_done, packet_end;
-reg [8:0] data_set_len, data_set_cnt;
-reg [2:0] data_set_byte_cnt;
 reg [4:0] cmd;
 
 reg [1:0] mlt_ctrl;
-reg trn_start, pal_set, attr_set;
+reg trn_start, pal_set;
 
 reg [1:0] pal0123_no, pal0123_col_no;
 reg [14:0] pal_color;
@@ -85,44 +72,22 @@ reg pal0123_wr;
 reg ready_for_pulse, ready_for_write, ready_for_stop;
 
 reg [8:0] sys_pal_no[4];
-reg [5:0] attr_file_no;
 reg [1:0] mask_en;
 reg cancel_mask;
 
-reg [2:0] attr_blk_ctrl;
-reg [5:0] attr_blk_pal;
-reg [4:0] attr_blk_x1,attr_blk_x2,attr_blk_y1,attr_blk_y2;
-reg attr_blk_set;
-
-reg [7:0] attr_lin_data;
-reg attr_lin_set;
-
-reg [5:0] attr_div_pal;
-reg attr_div_hv;
-reg [4:0] attr_div_xy;
-reg attr_div_set;
-
-reg [7:0] attr_chr_data;
-reg [4:0] attr_chr_data_x;
-reg [8:0] attr_chr_data_offset, attr_chr_len;
-reg attr_chr_set, attr_chr_dir, attr_chr_start;
-
 always @(posedge clk_sys) begin
 	 if (reset) begin
-		attr_file_no <= 0;
 		packet_cnt <= 0;
 		cnt <= 0;
 		byte_cnt <= 0;
 		byte_done <= 0;
-		data_set_len <= 0;
-		data_set_cnt <= 0;
 		mask_en <= 0;
 		packet_end <= 1'b1;
  		mlt_ctrl <= 0;
  		ready_for_pulse <= 0;
  		ready_for_write <= 0;
  		ready_for_stop <= 0;
- 	 end else if (ce) begin
+	 end else if (ce) begin
 		old_p15 <= p15;
 		old_p14 <= p14;
 
@@ -166,14 +131,9 @@ always @(posedge clk_sys) begin
 
 		trn_start <= 0;
 		pal_set <= 0;
-		attr_set <= 0;
 		pal0123_wr <= 0;
-		attr_blk_set <= 0;
-		attr_lin_set <= 0;
-		attr_div_set <= 0;
-		attr_chr_set <= 0;
 
-		if (pal_cancel_mask | attr_cancel_mask) mask_en <= 0;
+		if (pal_cancel_mask) mask_en <= 0;
 
 		if (byte_done) begin
 			byte_done <= 0;
@@ -181,9 +141,6 @@ always @(posedge clk_sys) begin
 
 			if (!packet_cnt && !byte_cnt) begin
 				{cmd,length} <= data;
-				if (data[7:3] == CMD_CART_1 || data[7:3] == CMD_CART_2) begin
-					length <= 1; // Unused. Fixed length 1
-				end
 			end
 
 			case (cmd)
@@ -191,10 +148,7 @@ always @(posedge clk_sys) begin
 					if (byte_cnt == 5'd1)
 						mlt_ctrl <= (data[1:0] == 2'd2) ? 2'd3 : data[1:0];
 				end
-				CMD_CHR_TRN,
-				CMD_PCT_TRN,
-				CMD_PAL_TRN,
-				CMD_ATTR_TRN: begin
+				CMD_PAL_TRN: begin
 					if (byte_cnt == 5'd1) trn_start <= 1'b1;
 				end
 				CMD_PAL01,
@@ -245,97 +199,10 @@ always @(posedge clk_sys) begin
 						7: sys_pal_no[3][7:0] <= data;
 						8: sys_pal_no[3][8]   <= data[0];
 						9: begin
-							attr_file_no <= data[5:0];
 							cancel_mask <= data[6];
-							if (data[7]) attr_set <= 1'b1;
 							pal_set <= 1'b1;
 						end
 					endcase
-				CMD_ATTR_SET: begin
-					if (byte_cnt == 5'd1) begin
-						attr_file_no <= data[5:0];
-						cancel_mask <= data[6];
-						attr_set <= 1'b1;
-					end
-				end
-				CMD_ATTR_BLK: begin
-					if (!packet_cnt && byte_cnt == 5'd1) begin
-						data_set_len <= {4'd0,data[4:0]};
-						data_set_cnt <= 0;
-						data_set_byte_cnt <= 0;
-					end
-
-					if (|data_set_len && data_set_cnt < data_set_len) begin
-						data_set_byte_cnt <= data_set_byte_cnt + 1'b1;
-
-						case(data_set_byte_cnt)
-							0: attr_blk_ctrl <= data[2:0];
-							1: attr_blk_pal <= data[5:0];
-							2: attr_blk_x1 <= data[4:0];
-							3: attr_blk_y1 <= data[4:0];
-							4: attr_blk_x2 <= data[4:0];
-							5: begin
-								attr_blk_y2 <= data[4:0];
-								attr_blk_set <= 1'b1;
-								data_set_byte_cnt <= 0;
-								data_set_cnt <= data_set_cnt + 1'b1;
-								if (data_set_cnt + 1'b1 == data_set_len) begin
-									data_set_len <= 0;
-								end
-							end
-						endcase
-					end
-				end
-				CMD_ATTR_LIN: begin
-					if (!packet_cnt && byte_cnt == 5'd1) begin
-						data_set_len <= {2'd0,data[6:0]};
-						data_set_cnt <= 0;
-					end
-
-					if (|data_set_len && data_set_cnt < data_set_len) begin
-						attr_lin_data <= data;
-						attr_lin_set <= 1'b1;
-						data_set_cnt <= data_set_cnt + 1'b1;
-						if (data_set_cnt + 1'b1 == data_set_len) begin
-							data_set_len <= 0;
-						end
-					end
-				end
-				CMD_ATTR_DIV: begin
-					case (byte_cnt)
-						1: {attr_div_hv,attr_div_pal} <= data[6:0];
-						2: begin
-							attr_div_xy <= data[4:0];
-							attr_div_set <= 1'b1;
-						end
-					endcase
-				end
-				CMD_ATTR_CHR: begin
-					if (!packet_cnt) begin
-						case (byte_cnt)
-							1: attr_chr_data_x <= data[4:0];
-							2: attr_chr_data_offset <= 5'd20 * data[4:0];
-							3: attr_chr_len[7:0] <= data;
-							4: attr_chr_len[8] <= data[0];
-							5: begin
-								attr_chr_dir <= data[0];
-								data_set_len <= attr_chr_len;
-								data_set_cnt <= 0;
-								attr_chr_start <= 1'b1;
-							end
-						endcase
-					end
-
-					if (|data_set_len && data_set_cnt < data_set_len) begin
-						attr_chr_data <= data;
-						attr_chr_set <= 1'b1;
-						if (|data_set_cnt) attr_chr_start <= 0;
-						data_set_cnt <= data_set_cnt + 9'd4;
-						if (data_set_cnt + 9'd4 >= data_set_len) begin
-							data_set_len <= 0;
-						end
-					end
-				end
 				CMD_MASK_EN: begin
 					if (byte_cnt == 5'd1) mask_en <= data[1:0];
 				end
@@ -347,7 +214,6 @@ always @(posedge clk_sys) begin
 				if (packet_cnt + 1'b1 >= length) begin
 					packet_cnt <= 0;
 					packet_end <= 1'b1;
-					data_set_len <= 0;
 				end
 			end
 		end
@@ -370,7 +236,7 @@ always @(posedge clk_sys) begin
 	end
 end
 
-assign joy_do = (sgb_en & p15 & p14) ? ~{2'b00,joypad_id} : joy_data;
+assign joy_do = (sgb_en & p15 & p14) ? ~{2'b00, joypad_id} : joy_data;
 
 wire [3:0] joy_dir     = ~{ joystick[0], joystick[1], joystick[2], joystick[3] } | {4{p14}};
 wire [3:0] joy_buttons = ~{ joystick[7], joystick[6], joystick[5], joystick[4] } | {4{p15}};
@@ -386,23 +252,19 @@ wire [7:0] joystick =
 wire lcd_off = !lcd_on || (lcd_mode == 2'd01);
 reg old_lcd_off;
 
-// LCD frame scanner — tracks pixel position for tile-based palette assignment
-// and collects pixel data for PAL_TRN / ATTR_TRN transfers.
+// LCD frame scanner — tracks pixel position and collects pixel data
+// for PAL_TRN transfers.
 reg trn_en, trn_wait, frame_end;
 reg [7:0] pix_x, pix_y;
 reg [8:0] tile_offset;
 reg [6:0] trn_data_h, trn_data_l;
-reg pct_trn_done, chr_trn_done;
 
 wire [8:0] tile_number = {tile_offset+pix_x[7:3]};
 wire [13:0] pixel_wr_addr = {tile_number[7:0], pix_y[2:0], pix_x[2:0]};
 wire [15:0] trn_data = {trn_data_h, lcd_data_gb[1], trn_data_l, lcd_data_gb[0]};
 
 always @(posedge clk_sys) begin
-	if (reset) begin
-		pct_trn_done <= 0;
-		chr_trn_done <= 0;
-	end else if (ce) begin
+	if (ce) begin
 		frame_end <= 0;
 
 		old_lcd_off <= lcd_off;
@@ -449,16 +311,10 @@ wire trn_data_wr = (ce && lcd_clkena && trn_en && &pix_x[2:0] && !tile_number[8]
 
 // System palette RAM (for PAL_TRN / PAL_SET)
 (* ramstyle="block" *) reg [14:0] sys_pal_ram[2048];
-// Attribute files RAM (for ATTR_TRN / ATTR_SET)
-(* ramstyle="block" *) reg [15:0] attr_files_ram[2048];
 
 always @(posedge clk_sys) begin
 	if (trn_data_wr && cmd == CMD_PAL_TRN) begin
 		sys_pal_ram[pixel_wr_addr[13:3]] <= trn_data[14:0];
-	end
-
-	if (trn_data_wr && cmd == CMD_ATTR_TRN && pixel_wr_addr[13:3] < 11'd2025) begin
-		attr_files_ram[pixel_wr_addr[13:3]] <= {trn_data[7:0],trn_data[15:8]};
 	end
 end
 
@@ -468,7 +324,6 @@ reg [1:0] pal_wr_no, pal_wr_col_no;
 reg [0:59] palette[4];
 reg pal_set_wait, pal_set_busy, pal_wr, pal_cancel_mask, pal_clear;
 reg [3:0] pal_set_cnt, pal_set_cnt_r;
-reg [10:0] sys_pal_ram_addr;
 reg output_sgb_pal;
 
 always @(posedge clk_sys) begin
@@ -534,252 +389,9 @@ always @(posedge clk_sys) begin
 
 end
 
-// Attribute file storage
-reg [15:0] attr_file_data;
-(* ramstyle="block" *) reg [1:0] attr_file_temp[512];
-(* ramstyle="block" *) reg [1:0] attr_file[512];
-reg attr_file_ready;
-reg attr_copy_busy;
-reg [8:0] attr_copy_addr;
-reg attr_file_copied;
-
-reg attr_set_busy, attr_blk_busy, attr_lin_busy, attr_div_busy, attr_chr_busy;
-reg [8:0] attr_set_cnt, attr_set_cnt_r;
-reg [10:0] attr_file_ram_addr;
-reg [5:0] attr_file_idx;
-reg attr_cancel_mask;
-
-reg [8:0] attr_tile_no, attr_tile_no_wr;
-reg [4:0] attr_tile_cnt_x, attr_tile_cnt_y;
-reg [1:0] attr_file_pal_wr;
-reg attr_file_wr;
-
-reg [8:0] attr_chr_pal_cnt;
-reg [4:0] attr_chr_x;
-reg [8:0] attr_chr_offset;
-
-reg attr_clear;
-always @(posedge clk_sys) begin
-	if (reset) begin
-		attr_set_busy <= 0;
-		attr_blk_busy <= 0;
-		attr_lin_busy <= 0;
-		attr_div_busy <= 0;
-		attr_chr_busy <= 0;
-		attr_clear <= 1'b1;
-		attr_set_cnt <= 0;
-		attr_file_ready <= 1;
-		attr_copy_busy <= 0;
-		attr_file_copied <= 0;
-	end else if (ce) begin
-
-		attr_cancel_mask <= 0;
-		attr_file_wr <= 0;
-
-		if (attr_set) begin
-			attr_set_busy <= 1'b1;
-			attr_set_cnt <= 0;
-			attr_file_ram_addr <= 0;
-			attr_file_idx <= 0;
-			attr_file_ready <= 0;
-		end
-
-		attr_file_data <= attr_files_ram[attr_file_ram_addr];
-
-		if (attr_set_busy) begin
-			if (attr_file_idx != attr_file_no) begin
-				attr_file_idx <= attr_file_idx + 1'b1;
-				attr_file_ram_addr <= attr_file_ram_addr + 11'd45;
-			end else begin
-				attr_set_cnt <= attr_set_cnt + 1'b1;
-				attr_set_cnt_r <= attr_set_cnt;
-
-				if (&attr_set_cnt[2:0]) attr_file_ram_addr <= attr_file_ram_addr + 1'b1;
-
-				attr_file_pal_wr <= attr_file_data[~attr_set_cnt_r[2:0]*2 +: 2];
-				attr_tile_no_wr <= attr_set_cnt_r;
-				attr_file_wr <= 1'b1;
-			end
-
-			if (attr_file_idx == 6'd45 || attr_set_cnt_r == 9'd359) begin
-				attr_set_busy <= 0;
-				attr_file_ready <= 1;
-				if (cancel_mask) attr_cancel_mask <= 1'b1;
-			end
-		end
-
-		if (attr_blk_set) attr_blk_busy <= 1'b1;
-		if (attr_lin_set) attr_lin_busy <= 1'b1;
-		if (attr_div_set) attr_div_busy <= 1'b1;
-
-		if (attr_blk_set | attr_lin_set | attr_div_set) begin
-			attr_tile_no <= 0;
-			attr_tile_cnt_x <= 0;
-			attr_tile_cnt_y <= 0;
-			attr_file_ready <= 0;
-		end
-
-		if (attr_blk_busy | attr_lin_busy | attr_div_busy) begin
-			attr_tile_no <= attr_tile_no + 1'b1;
-			attr_tile_cnt_x <= attr_tile_cnt_x + 1'b1;
-			attr_tile_no_wr <= attr_tile_no;
-
-			if(attr_tile_cnt_x == 5'd19) begin
-				attr_tile_cnt_x <= 0;
-				attr_tile_cnt_y <= attr_tile_cnt_y + 1'b1;
-				if (attr_tile_cnt_y == 5'd17) begin
-					attr_blk_busy <= 0;
-					attr_lin_busy <= 0;
-					attr_div_busy <= 0;
-					if (!data_set_len | attr_div_busy) begin
-						attr_file_ready <= 1;
-					end
-				end
-			end
-		end
-
-		// ATTR_BLK
-		if (attr_blk_busy) begin
-			if (attr_tile_cnt_x > attr_blk_x1 && attr_tile_cnt_x < attr_blk_x2
-				&& attr_tile_cnt_y > attr_blk_y1 && attr_tile_cnt_y < attr_blk_y2) begin
-				// inside
-				if (attr_blk_ctrl[0]) begin
-					attr_file_pal_wr <= attr_blk_pal[1:0];
-					attr_file_wr <= 1'b1;
-				end
-			end else if (attr_tile_cnt_x < attr_blk_x1 || attr_tile_cnt_x > attr_blk_x2
-				|| attr_tile_cnt_y < attr_blk_y1 || attr_tile_cnt_y > attr_blk_y2) begin
-				// outside
-				if (attr_blk_ctrl[2]) begin
-					attr_file_pal_wr <= attr_blk_pal[5:4];
-					attr_file_wr <= 1'b1;
-				end
-			end else begin
-				// on border
-				casez (attr_blk_ctrl)
-					3'b001: begin
-						attr_file_pal_wr <= attr_blk_pal[1:0];
-						attr_file_wr <= 1'b1;
-					end
-					3'b100: begin
-						attr_file_pal_wr <= attr_blk_pal[5:4];
-						attr_file_wr <= 1'b1;
-					end
-					3'b?1?: begin
-						attr_file_pal_wr <= attr_blk_pal[3:2];
-						attr_file_wr <= 1'b1;
-					end
-				endcase
-			end
-		end
-
-		// ATTR_LIN
-		if (attr_lin_busy) begin
-			if ( (attr_lin_data[7] && attr_tile_cnt_y == attr_lin_data[4:0])
-				  || (~attr_lin_data[7] && attr_tile_cnt_x == attr_lin_data[4:0]) ) begin
-				attr_file_wr <= 1'b1;
-				attr_file_pal_wr <= attr_lin_data[6:5];
-			end
-		end
-
-		// ATTR_DIV
-		if (attr_div_busy) begin
-			if ( (~attr_div_hv && attr_tile_cnt_x > attr_div_xy) || (attr_div_hv && attr_tile_cnt_y > attr_div_xy) ) begin
-				attr_file_pal_wr <= attr_div_pal[1:0];
-			end else if ( (~attr_div_hv && attr_tile_cnt_x < attr_div_xy) || (attr_div_hv && attr_tile_cnt_y < attr_div_xy) ) begin
-				attr_file_pal_wr <= attr_div_pal[3:2];
-			end else begin
-				attr_file_pal_wr <= attr_div_pal[5:4];
-			end
-			attr_file_wr <= 1'b1;
-		end
-
-		// ATTR_CHR
-		if (attr_chr_set) begin
-			attr_chr_busy <= 1'b1;
-			attr_file_ready <= 0;
-			if (attr_chr_start) begin
-				attr_chr_pal_cnt <= 0;
-				attr_chr_x <= attr_chr_data_x;
-				attr_chr_offset <= attr_chr_data_offset;
-			end
-		end
-
-		if (attr_chr_busy) begin
-			attr_chr_pal_cnt <= attr_chr_pal_cnt + 1'b1;
-			if (&attr_chr_pal_cnt[1:0]) begin
-				attr_chr_busy <= 0;
-			end
-			if (attr_chr_pal_cnt+1'b1 == attr_chr_len) begin
-				attr_chr_busy <= 0;
-				attr_file_ready <= 1;
-			end
-
-			if (attr_chr_dir) begin
-				attr_chr_offset <= attr_chr_offset + 9'd20;
-				if(attr_chr_offset == 9'd340) begin
-					attr_chr_offset <= 0;
-					attr_chr_x <= attr_chr_x + 1'b1;
-					if (attr_chr_x == 5'd19) attr_chr_x <= 0;
-				end
-			end
-
-			if (~attr_chr_dir) begin
-				attr_chr_x <= attr_chr_x + 1'b1;
-				if (attr_chr_x == 5'd19) begin
-					attr_chr_x <= 0;
-					attr_chr_offset <= attr_chr_offset + 9'd20;
-					if (attr_chr_offset == 9'd340) attr_chr_offset <= 0;
-				end
-			end
-
-			attr_tile_no_wr <= attr_chr_offset + attr_chr_x;
-			case (attr_chr_pal_cnt[1:0])
-				0: attr_file_pal_wr <= attr_chr_data[7:6];
-				1: attr_file_pal_wr <= attr_chr_data[5:4];
-				2: attr_file_pal_wr <= attr_chr_data[3:2];
-				3: attr_file_pal_wr <= attr_chr_data[1:0];
-			endcase
-			attr_file_wr <= 1'b1;
-		end
-
-		if (attr_clear) begin
-			attr_set_cnt <= attr_set_cnt + 1'b1;
-			attr_file_pal_wr <= 0;
-			attr_tile_no_wr <= attr_set_cnt;
-			attr_file_wr <= 1'b1;
-			if (attr_set_cnt == 9'd359) attr_clear <= 0;
-		end
-
-		if (attr_file_wr) begin
-			attr_file_temp[attr_tile_no_wr] <= attr_file_pal_wr;
-		end
-
-		if (lcd_off) begin
-			if (attr_file_ready && !attr_file_copied && !attr_copy_busy) begin
-				attr_copy_busy <= 1'b1;
-				attr_copy_addr <= 0;
-			end
-		end else begin
-			attr_file_copied <= 0;
-		end
-
-		if (attr_copy_busy) begin
-			attr_file[attr_copy_addr] <= attr_file_temp[attr_copy_addr];
-			attr_copy_addr <= attr_copy_addr + 1'b1;
-			if (attr_copy_addr == 9'd359) begin
-				attr_copy_busy <= 0;
-				attr_file_copied <= 1'b1;
-			end
-		end
-
-	end
-end
-
-// LCD palette output
+// LCD palette output — no attribute files, all tiles use palette 0
 reg [14:0] lcd_data_r;
 reg [1:0]  lcd_data_gb_r;
-reg [1:0]  pal_no;
 reg lcd_clkena_r, lcd_on_r, lcd_vsync_r;
 reg [1:0]  lcd_mode_r;
 reg [1:0]  mask_en_r;
@@ -791,7 +403,6 @@ always @(posedge clk_sys) begin
 			mask_en_r <= mask_en;
 		end
 
-		pal_no <= attr_file[tile_number];
 		lcd_data_r <= lcd_data;
 		lcd_data_gb_r <= lcd_data_gb;
 		lcd_clkena_r <= lcd_clkena;
@@ -806,7 +417,7 @@ always @(posedge clk_sys) begin
 		end else if (!lcd_data_gb_r || mask_en_r == 2'd3) begin
 			sgb_lcd_data <= palette[0][0:14];
 		end else begin
-			sgb_lcd_data <= palette[pal_no][lcd_data_gb_r*15 +: 15];
+			sgb_lcd_data <= palette[0][lcd_data_gb_r*15 +: 15];
 		end
 
 		sgb_lcd_clkena <= lcd_clkena_r;

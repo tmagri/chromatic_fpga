@@ -5,3 +5,4 @@ esp32t/build/*
 .DS_Store
 repomix-output.xml
 changes.diff
+.qwen/settings.json

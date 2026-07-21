@@ -166,6 +166,7 @@ module emu_system_top
     wire [7:0] CART_DIN_r1;
     wire [15:0] a;
     wire [2:0] TSTATEo;
+    wire TSTATE1, TSTATE2, TSTATE3, TSTATE4;
     wire sleep_savestate;
     wire ce_n;
     wire ce_4x;
@@ -406,7 +407,7 @@ module emu_system_top
         .oc_lvl(oc_lvl),
 
         .isGBC(sgb_dmg_boot ? 1'b0 : 1'b1),
-        .isSGB(isSGB_game),
+        .isSGB(sgb_game_detected), //isSGB_game //sgb_game_detected
         .real_cgb_boot(1'd0),
         .customPaletteEna(customPaletteEna),
         .paletteBGIn(paletteBGIn),

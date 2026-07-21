@@ -76,6 +76,17 @@ mif:
 	$(BIN)/cgb_boot.bin -Binary \
 	-Output_Block_Size 16 -o cgb_boot.mif -mif -CRLF
 
+# Build SGB boot ROM binary (256 bytes)
+$(BIN)/sgb_boot.bin: $(SRC)/sgb_boot.asm
+	-@$(MKDIR) -p $(dir $@)
+	rgbasm -i $(OBJ) -i $(SRC) -o $@.tmp $<
+	rgblink -o $@.tmp2 $@.tmp
+	dd if=$@.tmp2 of=$@ count=1 bs=256 2> $(NULL)
+	@rm $@.tmp $@.tmp2
+
+# Memory layout: CGB=$000-$8FF, DMG=$900-$9FF, SGB=$A00-$AFF
 .PHONY : vmem
-vmem:
-	hexdump -v -e '1/1 "%02X \r\n"' $(BIN)/cgb_boot.bin | head -n 2048 > cgb_boot.mif.vmem
+vmem: $(BIN)/cgb_boot.bin $(BIN)/sgb_boot.bin
+	hexdump -v -e '1/1 "%02X\n"' $(BIN)/cgb_boot.bin > cgb_boot.mif.vmem
+	hexdump -v -e '1/1 "%02X\n"' $(BIN)/sgb_boot.bin >> cgb_boot.mif.vmem
+

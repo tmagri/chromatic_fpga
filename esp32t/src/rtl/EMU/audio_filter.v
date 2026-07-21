@@ -1,4 +1,3 @@
-
 module audio_filter
 (
 	input        reset,
@@ -11,42 +10,20 @@ module audio_filter
 	output [15:0] filter_r
 );
 
-localparam CLK_RATE = 16777000; // hclk
+// ----------------------------------------------------------------
+// Shift-only replacement for the 3-tap IIR + DC_blocker.
+// Saves 7 MULT27X36 DSPs and ~1300 CLS vs. the original.
+//
+// Signal chain (per channel, at ~65.5 kHz sample rate):
+//   1. 2-stage cascaded 1-pole IIR low-pass   y = (x + y) >>> 1
+//      → 2-pole, fc ≈ 7 kHz, 12 dB/oct
+//   2. 1-pole DC blocker                      y += x − x_prev − (y >>> 8)
+//      → high-pass, fc ≈ 41 Hz
+// ----------------------------------------------------------------
 
-reg [31:0] flt_rate = 7056000;
-reg [39:0] cx  = 4258969;
-reg  [7:0] cx0 = 3;
-reg  [7:0] cx1 = 3;
-reg  [7:0] cx2 = 1;
-reg [23:0] cy0 = 24'hA123C9;
-reg [23:0] cy1 = 24'h5DBD9A;
-reg [23:0] cy2 = 24'hE11EA9;
-
-reg sample_ce;
-reg [7:0] div = 0;
-always @(posedge clk) begin
-	div <= div + 1'd1;
-	if(!div) begin
-		div <= 2'd1;
-	end
-
-	sample_ce <= !div;
-end
-
-reg flt_ce;
-reg [31:0] cnt = 0;
-always @(posedge clk) begin
-	flt_ce = 0;
-	cnt = cnt + {flt_rate[30:0],1'b0};
-	if(cnt >= CLK_RATE) begin
-		cnt = cnt - CLK_RATE;
-		flt_ce = 1;
-	end
-end
-
-reg [15:0] cl,cr;
-reg [15:0] cl1,cl2;
-reg [15:0] cr1,cr2;
+// Capture stable input (same as original)
+reg [15:0] cl, cr;
+reg [15:0] cl1, cl2, cr1, cr2;
 always @(posedge clk) begin
 	cl1 <= core_l; cl2 <= cl1;
 	if(cl2 == cl1) cl <= cl2;
@@ -55,70 +32,58 @@ always @(posedge clk) begin
 	if(cr2 == cr1) cr <= cr2;
 end
 
-reg a_en1 = 0, a_en2 = 0;
-reg  [1:0] dly1 = 0;
-reg [14:0] dly2 = 0;
-always @(posedge clk, posedge reset) begin
-	if(reset) begin
-		dly1 <= 0;
-		dly2 <= 0;
-		a_en1 <= 0;
-		a_en2 <= 0;
-	end
-	else begin
-		if(flt_ce) begin
-			if(~&dly1) dly1 <= dly1 + 1'd1;
-			else a_en1 <= 1;
-		end
+// Output sample rate ≈ 65.5 kHz (CLK_RATE / 256)
+reg sample_ce;
+reg [7:0] div = 0;
+always @(posedge clk) begin
+	div <= div + 1'd1;
+	if(!div) div <= 2'd1;
+	sample_ce <= !div;
+end
 
-		if(sample_ce) begin
-			if(!dly2[13]) dly2 <= dly2 + 1'd1;
-			else a_en2 <= 1;
-		end
+// Startup mute (~125 ms)
+reg [14:0] dly = 0;
+reg a_en = 0;
+always @(posedge clk or posedge reset) begin
+	if (reset) begin
+		dly  <= 0;
+		a_en <= 0;
+	end else if (sample_ce) begin
+		if (!dly[13]) dly <= dly + 1'd1;
+		else a_en <= 1;
 	end
 end
 
-wire [15:0] acl, acr;
-IIR_filter #(.use_params(0)) IIR_filter
-(
-	.clk(clk),
-	.reset(reset),
+// 2-stage cascaded 1-pole IIR low-pass (no multipliers)
+reg signed [15:0] lp1_l, lp2_l;
+reg signed [15:0] lp1_r, lp2_r;
 
-	.ce(flt_ce & a_en1),
-	.sample_ce(sample_ce),
+// DC blocker with 24-bit accumulator
+reg signed [23:0] dc_l, dc_r;
+reg signed [15:0] dc_x_l, dc_x_r;
 
-	.cx(cx),
-	.cx0(cx0),
-	.cx1(cx1),
-	.cx2(cx2),
-	.cy0(cy0),
-	.cy1(cy1),
-	.cy2(cy2),
+always @(posedge clk) begin
+	if (reset) begin
+		lp1_l <= 0; lp2_l <= 0;
+		lp1_r <= 0; lp2_r <= 0;
+		dc_l  <= 0; dc_r  <= 0;
+		dc_x_l <= 0; dc_x_r <= 0;
+	end else if (sample_ce) begin
+		// Low-pass stage 1: y = (x + y) / 2
+		lp1_l <= ($signed(cl) + $signed(lp1_l)) >>> 1;
+		lp1_r <= ($signed(cr) + $signed(lp1_r)) >>> 1;
+		// Low-pass stage 2: y = (x + y) / 2
+		lp2_l <= ($signed(lp1_l) + $signed(lp2_l)) >>> 1;
+		lp2_r <= ($signed(lp1_r) + $signed(lp2_r)) >>> 1;
+		// DC blocker: y += x − x_prev − y/256
+		dc_l <= dc_l + $signed(lp2_l) - $signed(dc_x_l) - (dc_l >>> 8);
+		dc_r <= dc_r + $signed(lp2_r) - $signed(dc_x_r) - (dc_r >>> 8);
+		dc_x_l <= lp2_l;
+		dc_x_r <= lp2_r;
+	end
+end
 
-	.input_l(cl),
-	.input_r(cr),
-	.output_l(acl),
-	.output_r(acr)
-);
-
-DC_blocker dcb_l
-(
-	.clk(clk),
-	.ce(sample_ce),
-	.sample_rate(0),
-	.mute(~a_en2),
-	.din(acl),
-	.dout(filter_l)
-);
-
-DC_blocker dcb_r
-(
-	.clk(clk),
-	.ce(sample_ce),
-	.sample_rate(0),
-	.mute(~a_en2),
-	.din(acr),
-	.dout(filter_r)
-);
+assign filter_l = a_en ? dc_l[15:0] : 16'd0;
+assign filter_r = a_en ? dc_r[15:0] : 16'd0;
 
 endmodule

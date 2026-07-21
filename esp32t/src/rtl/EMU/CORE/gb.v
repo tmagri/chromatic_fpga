@@ -1103,11 +1103,10 @@ assign sel_boot_rom = boot_rom_enabled && (!boot_rom_addr[15:8] || sel_boot_rom_
 
 
 // $000-8FF: GBC
-// $900-9FF: DMG
-// $A00-AFF: SGB
+// $900-9FF: DMG/SGB (SGB boot ROM sets A=$01 for DMG/SGB mode;
+//           palette commands handled externally by sgb.v)
 wire [11:0] boot_addr =
         isGBC ? boot_rom_addr[11:0] :
-        isSGB ? { 4'hA, boot_rom_addr[7:0] } :
         { 4'h9, boot_rom_addr[7:0] };
 
 wire boot_download = cgb_boot_download | dmg_boot_download;
