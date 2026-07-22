@@ -69,6 +69,7 @@ prepare:
 	cp -R ../../../../Gameboy_MiSTer/BootROMs/src/ $(SRC)
 	cp -f ../../../../Gameboy_MiSTer/BootROMs/CGB_logo.png CGB_logo.png
 	cp -f cgb_boot.asm $(SRC)/cgb_boot.asm
+	cp -f sgb_boot.asm $(SRC)/sgb_boot.asm
 
 .PHONY : mif
 mif:

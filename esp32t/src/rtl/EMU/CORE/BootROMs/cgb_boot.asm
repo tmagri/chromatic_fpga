@@ -1013,11 +1013,11 @@ LoadBGPalettes:
 LoadPalettes:
     ld a, $80
     or e
-    ld [c], a
+    ldh [c], a
     inc c
 .loop
     ld a, [hli]
-    ld [c], a
+    ldh [c], a
     dec d
     jr nz, .loop
     ret
@@ -1190,8 +1190,8 @@ CheckAGB:
     ret
 
 CheckFastBoot:
-    ld a, 2
-    bit 1, a
+    ldh a, [rBANK]  ; read FF50 special register: {6'b0, fast_boot_en, boot_gba_en}
+    bit 1, a        ; Z=1 if fast boot disabled, Z=0 if enabled
     ret
 
 CheckAGBPalette:

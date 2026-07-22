@@ -446,7 +446,8 @@ module emu_system_top
         .boot_rom_enabled(boot_rom_enabled),
 
         .boot_gba_en(1'd0),
-        .fast_boot_en(1'd0),
+        .fast_boot_en(1'd1),
+        .skip_boot_rom(1'd0),  // reserved: cannot skip SGB boot ROM (packet TX required)
         // audio
         .audio_l(snd_l),
         .audio_r(snd_r),

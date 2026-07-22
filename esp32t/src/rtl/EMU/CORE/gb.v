@@ -74,6 +74,7 @@ module gb (
     // Bootrom features
     input boot_gba_en,
     input fast_boot_en,
+    input skip_boot_rom,  // skip boot ROM on reset (e.g. SGB DMG reboot)
 
     // audio
     output [15:0] audio_l,
@@ -1125,8 +1126,8 @@ assign SS_Top_BACK[23] = boot_rom_enabled;
 
 always @(posedge clk_sys) begin
     if(reset_ss)
-        boot_rom_enabled <= SS_Top[23]; // 1'b1;
-    else if (ce) begin 
+        boot_rom_enabled <= SS_Top[23] & ~skip_boot_rom;
+    else if (ce) begin
         if((cpu_addr == 16'hff50) && !cpu_wr_n_edge)
         begin
           if ((isGBC && cpu_do[7:0]==8'h11) || (!isGBC && cpu_do[0]))
