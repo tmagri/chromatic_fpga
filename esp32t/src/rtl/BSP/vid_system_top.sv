@@ -450,27 +450,15 @@ module color_correction(
     wire [5:0] green = hColorPixel[11:6];
     wire [5:0] blue = hColorPixel[17:12];
 
-    wire [9:0] r10 = (red * 'd13) + (green * 'd2) + blue; // 999
-    wire [7:0] g8 = (green * 'd3) + blue; // 252
-    wire [9:0] b10 = (red * 'd3) + (green * 'd2) + (blue * 'd11); // 1008
-
-    wire [15:0] rlcd1 = red[5:1]  * 'd216  + green[5:1] * 'd30;
-    wire [15:0] rlcd2 = blue[5:1] * 'd25;
-    wire [15:0] rlcd3 = ( rlcd1 < rlcd2 ) ? 'd0 : rlcd1 - rlcd2;
-    wire [15:0] glcd = red[5:1] * 'd39  + green[5:1] * 'd137 +  blue[5:1] * 'd24;//620 + 1054 + 217 = 1891
-    wire [15:0] blcd = red[5:1] * 'd21  + green[5:1] * 'd24 +  blue[5:1] * 'd125;//620 + 1054 + 217 = 1891
-
-    wire [5:0] blcdc = blcd[13] ? 6'h3F : blcd[12:7];
-    wire [5:0] glcdc = glcd[13] ? 6'h3F : glcd[12:7];
-    wire [5:0] rlcdc = rlcd3[13] ? 6'h3F : rlcd3[12:7];
-
+    // DSP-free passthrough: R/B swap only (saves 10 DSP blocks + ~100 CLS).
+    // To re-enable colour correction, restore the multiplier matrix from git history.
     always@(posedge hClk)
     begin
         hValidCorrected <= hValid;
         hHsyncCorrected <= hHsync;
         hVsyncCorrected <= hVsync;
-        hColorPixelCorrected    <= ~hCorrectLCD ? {blue, green, red} : {blcdc, glcdc, rlcdc};
-        hColorPixelUVCCorrected <= ~hCorrectUVC ? {blue, green, red} : {b10[9:4], g8[7:2], r10[9:4]};
+        hColorPixelCorrected    <= {blue, green, red};
+        hColorPixelUVCCorrected <= {blue, green, red};
     end
 
 endmodule

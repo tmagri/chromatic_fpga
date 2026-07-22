@@ -86,9 +86,24 @@ module gb (
     output reg lcd_clkena,
     output reg [14:0] lcd_data,
     output reg [1:0] lcd_data_gb,
+    output reg [7:0] lcd_pix_x,   // screen x (0-159) of lcd_data_gb pixel, in lockstep (for SGB)
+    output reg [7:0] lcd_pix_y,   // screen y (0-143) of lcd_data_gb pixel, in lockstep (for SGB)
     output reg [1:0] lcd_mode,
     output reg lcd_on,
     output reg lcd_vsync,
+
+    // SGB taps: main-video LCD state only, never videoBypass outputs.
+    // The bypass free-runs while the game's LCD is off (and during the
+    // LCD-on alignment window): lcd_on=1, mode cycling through vblank,
+    // lcd_clkena pulsing and lcd_data_gb forced to 0. Feeding that to
+    // sgb.v makes its frame scanner see phantom frames and overwrite
+    // PAL_TRN/ATTR_TRN captures with zeros (Pokemon Red/Blue and
+    // Donkey Kong '94 boot to a black screen). MiSTer feeds sgb.v
+    // directly from the video module; these taps restore that.
+    output reg lcd_clkena_sgb,
+    output reg [1:0] lcd_data_gb_sgb,
+    output reg [1:0] lcd_mode_sgb,
+    output reg lcd_on_sgb,
 
     output [1:0] joy_p54,
     input  [3:0] joy_din,
@@ -766,6 +781,8 @@ wire [7:0] dma_data = (isGBC & dma_sel_wram) ? wram_do :
 wire lcd_clkena_int;
 wire [14:0] lcd_data_int;
 wire [1:0] lcd_data_gb_int;
+wire [7:0] lcd_pix_x_int;
+wire [7:0] lcd_pix_y_int;
 wire [1:0] lcd_mode_int;
 wire lcd_vsync_int;
 
@@ -789,6 +806,8 @@ begin
          lcd_clkena <= lcd_clkena_int;
          lcd_data   <= lcd_data_int;
          lcd_data_gb <= lcd_data_gb_int;
+         lcd_pix_x  <= lcd_pix_x_int;
+         lcd_pix_y  <= lcd_pix_y_int;
          lcd_mode <= lcd_mode_int;
          lcd_on <= lcd_on_int;
          lcd_vsync <= lcd_vsync_int | lcd_vsync_overwrite;
@@ -810,6 +829,29 @@ begin
       end
    end else begin
       lcd_clkena <= 1'd0;
+   end
+end
+
+// SGB taps: mirror of the output stage above, but sourced from the main
+// video path only. Never muxes in videoBypass, so sgb.v sees a clean
+// constant "LCD off" while the game's LCD is disabled and true frame
+// timing otherwise (see port comment above). Same register shape as
+// lcd_clkena (1-cycle pulse on ce edges) so sgb.v's lcd_clkena_captured
+// logic keeps its alignment.
+always@(posedge clk_sys)
+begin
+   if(reset) begin
+       lcd_clkena_sgb   <= 1'd0;
+       lcd_data_gb_sgb  <= 2'd0;
+       lcd_mode_sgb     <= 2'd0;
+       lcd_on_sgb       <= 1'd0;
+   end else if(ce) begin
+       lcd_clkena_sgb   <= lcd_on_int ? lcd_clkena_int  : 1'd0;
+       lcd_data_gb_sgb  <= lcd_on_int ? lcd_data_gb_int : 2'd0;
+       lcd_mode_sgb     <= lcd_on_int ? lcd_mode_int    : 2'd0;
+       lcd_on_sgb       <= lcd_on_int;
+   end else begin
+       lcd_clkena_sgb   <= 1'd0;
    end
 end
 
@@ -844,6 +886,8 @@ video video (
     .lcd_clkena  ( lcd_clkena_int),
     .lcd_data    ( lcd_data_int      ),
     .lcd_data_gb ( lcd_data_gb_int   ),
+    .lcd_pix_x   ( lcd_pix_x_int     ),
+    .lcd_pix_y   ( lcd_pix_y_int     ),
     .mode        ( lcd_mode_int      ),
     .lcd_vsync   ( lcd_vsync_int     ),
 

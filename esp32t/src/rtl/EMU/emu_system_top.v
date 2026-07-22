@@ -461,9 +461,17 @@ module emu_system_top
         .lcd_clkena(gb_raw_lcd_clkena),
         .lcd_data(gb_raw_lcd_data),
         .lcd_data_gb(gb_raw_lcd_data_gb),
+        .lcd_pix_x(gb_raw_lcd_pix_x),
+        .lcd_pix_y(gb_raw_lcd_pix_y),
         .lcd_mode(gb_raw_lcd_mode),
         .lcd_on(gb_raw_lcd_on),
         .lcd_vsync(gb_raw_lcd_vsync),
+
+        // SGB taps: main-video state only (no videoBypass), see gb.v
+        .lcd_clkena_sgb(gb_sgb_lcd_clkena),
+        .lcd_data_gb_sgb(gb_sgb_lcd_data_gb),
+        .lcd_mode_sgb(gb_sgb_lcd_mode),
+        .lcd_on_sgb(gb_sgb_lcd_on),
 
         .joy_p54(joy_p54),
         .joy_din(joy_din),
@@ -525,9 +533,17 @@ module emu_system_top
     wire        gb_raw_lcd_clkena;
     wire [14:0] gb_raw_lcd_data;
     wire [1:0]  gb_raw_lcd_data_gb;  // 2-bit DMG pixel indices for SGB
+    wire [7:0]  gb_raw_lcd_pix_x;    // screen x of the lcd_data_gb pixel (in lockstep)
+    wire [7:0]  gb_raw_lcd_pix_y;    // screen y of the lcd_data_gb pixel (in lockstep)
     wire [1:0]  gb_raw_lcd_mode;
     wire        gb_raw_lcd_on;
     wire        gb_raw_lcd_vsync;
+
+    // Main-video LCD taps for the SGB module (never videoBypass outputs)
+    wire        gb_sgb_lcd_clkena;
+    wire [1:0]  gb_sgb_lcd_data_gb;
+    wire [1:0]  gb_sgb_lcd_mode;
+    wire        gb_sgb_lcd_on;
 
     // SGB joystick input word (format: Start,Sel,B,A,Right,Left,Up,Down)
     wire [7:0] joystick_0_w = {
@@ -552,11 +568,17 @@ module emu_system_top
         .sgb_en         (sgb_game_detected),
         .tint           (1'b0),
         .isGBC_game     (sgb_game_detected ? 1'b0 : isGBC_game),
-        .lcd_clkena     (gb_raw_lcd_clkena),
+        // LCD state for the SGB frame scanner must come from the
+        // main-video taps: videoBypass free-runs while the game's LCD
+        // is off (phantom vblanks + zeroed lcd_data_gb) and would
+        // corrupt PAL_TRN/ATTR_TRN captures (Pokemon/DK94 black boot).
+        .lcd_clkena     (gb_sgb_lcd_clkena),
         .lcd_data       (gb_raw_lcd_data),
-        .lcd_data_gb    (gb_raw_lcd_data_gb),
-        .lcd_mode       (gb_raw_lcd_mode),
-        .lcd_on         (gb_raw_lcd_on),
+        .lcd_data_gb    (gb_sgb_lcd_data_gb),
+        .lcd_pix_x      (gb_raw_lcd_pix_x),
+        .lcd_pix_y      (gb_raw_lcd_pix_y),
+        .lcd_mode       (gb_sgb_lcd_mode),
+        .lcd_on         (gb_sgb_lcd_on),
         .lcd_vsync      (gb_raw_lcd_vsync),
         .joystick_0     (joystick_0_w),
         .joystick_1     (8'b0),

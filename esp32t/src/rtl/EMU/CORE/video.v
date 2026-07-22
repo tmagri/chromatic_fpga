@@ -49,6 +49,8 @@ module video (
 	output lcd_clkena,
 	output [14:0] lcd_data,
 	output  [1:0] lcd_data_gb,
+	output  [7:0] lcd_pix_x,   // screen x (0-159) of the pixel on lcd_data_gb, in lockstep
+	output  [7:0] lcd_pix_y,   // screen y (0-143) of the pixel on lcd_data_gb, in lockstep
 	output lcd_vsync,
 
 	output irq,
@@ -1126,6 +1128,8 @@ assign lcd_clk = mode3 && ~skip_en && ~sprite_fetch_hold && ~bg_shift_empty && (
 
 reg [14:0] lcd_data_out;
 reg  [1:0] lcd_data_gb_out;
+reg  [7:0] lcd_pix_x_out;
+reg  [7:0] lcd_pix_y_out;
 reg lcd_clk_out;
 always @(posedge clk) begin
 	if (ce) begin
@@ -1133,6 +1137,12 @@ always @(posedge clk) begin
 		if (lcd_clk) begin
 			lcd_data_out <= (sprite_pixel_visible) ? sprite_pix : pix_rgb_data;
 			lcd_data_gb_out <= (sprite_pixel_visible) ? obp_data : bgp_data;
+			// Screen coordinates of this exact pixel, captured in lockstep with
+			// the colour above. pcnt runs 8..167 across the 160 visible pixels,
+			// so screen x = pcnt - 8. Used by the SGB overlay to index attr_file
+			// by the same (x,y) the colour came from (no phase skew).
+			lcd_pix_x_out <= pcnt - 8'd8;
+			lcd_pix_y_out <= v_cnt;
 		end
 
 		// Output blank pixels if lcd is off.
@@ -1142,6 +1152,8 @@ end
 
 assign lcd_data = lcd_data_out;
 assign lcd_data_gb = lcd_data_gb_out;
+assign lcd_pix_x = lcd_pix_x_out;
+assign lcd_pix_y = lcd_pix_y_out;
 assign lcd_clkena = lcd_clk_out;
 
 endmodule

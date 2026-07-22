@@ -3,6 +3,12 @@
 // Border rendering removed; SGB palette colorisation and attribute mapping retained.
 // Fixes: MiSTer edge-based packet detection, sgb_pal_en with mask_en support,
 //        direct pixel index, no channel swap, flat bit-vector attr_file.
+// NOTE: lcd_clkena/lcd_data_gb/lcd_mode/lcd_on must be driven from the
+// main-video taps in gb.v (lcd_*_sgb), never the videoBypass-muxed display
+// outputs. The bypass free-runs with phantom vblanks and zeroed pixel data
+// while the game's LCD is off; sampling it makes the PAL_TRN/ATTR_TRN frame
+// scanner capture all-zero palettes (Pokemon Red/Blue, Donkey Kong '94
+// booted to an unrecoverable black screen).
 // Original copyright applies — GPL-3.0 license.
 
 module sgb (
@@ -17,6 +23,8 @@ module sgb (
 	input        lcd_clkena,
 	input [14:0] lcd_data,
 	input [1:0]  lcd_data_gb,
+	input [7:0]  lcd_pix_x,   // screen x (0-159) of the lcd_data_gb pixel, in lockstep
+	input [7:0]  lcd_pix_y,   // screen y (0-143) of the lcd_data_gb pixel, in lockstep
 	input [1:0]  lcd_mode,
 	input        lcd_on,
 	input        lcd_vsync,
@@ -287,7 +295,7 @@ always @(posedge clk_sys) begin
 					if (!packet_cnt) begin
 						case (byte_cnt)
 							1: attr_chr_data_x <= data[4:0];
-							2: attr_chr_data_offset <= 5'd20 * data[4:0];
+							2: attr_chr_data_offset <= {data[4:0], 4'b0000} + {2'b00, data[4:0], 2'b00}; // 20*x = 16*x + 4*x, no DSP
 							3: attr_chr_len[7:0] <= data;
 							4: attr_chr_len[8] <= data[0];
 							5: begin
@@ -439,6 +447,15 @@ always @(posedge clk_sys) begin
 	end
 end
 
+// TEMP DEBUG: latches when the PAL_TRN frame-scanner capture actually writes a
+// palette entry into sys_pal_ram. Used by the sgb_debug overlay to tell whether
+// the PAL_TRN upload is populating the palette table (see sgb_pal_out below).
+reg pal_trn_captured;
+always @(posedge clk_sys) begin
+	if (reset) pal_trn_captured <= 1'b0;
+	else if (trn_data_wr && cmd == CMD_PAL_TRN) pal_trn_captured <= 1'b1;
+end
+
 // Palette storage
 reg [14:0] sys_pal_data, pal_wr_data;
 reg [1:0] pal_wr_no, pal_wr_col_no;
@@ -461,6 +478,12 @@ always @(posedge clk_sys) begin
 
 		if (pal_set) pal_set_wait <= 1'b1;
 
+		// MiSTer-faithful: copy the selected system palettes at the next frame
+		// boundary. pal_set_wait is sticky, so the copy is guaranteed to run on
+		// the next frame_end (vblank). The previous same-cycle shortcut raced the
+		// pal_set_busy/pal_set_cnt machinery and could strand a transition with
+		// the palette un-copied and the mask un-cleared (black screen that did
+		// not recover). One frame (~16ms) of palette latency is imperceptible.
 		if (pal_set_wait & frame_end) begin
 			pal_set_wait <= 0;
 			pal_set_busy <= 1'b1;
@@ -770,11 +793,16 @@ always @(posedge clk_sys) begin
 end
 
 // External palette read port — combinational lookup.
-// tile_number and pal_read_idx (lcd_data_gb) both correspond to the
-// current pixel when lcd_clkena is active (verified: pix_x is updated
-// on the same ce edge that sets lcd_clkena for the current pixel).
+// The palette select (attr_file tile) is derived from the video pixel
+// counters lcd_pix_x/lcd_pix_y, which video.v captures in the same cycle as
+// lcd_data_gb (pal_read_idx). They therefore index the exact 8x8 screen tile
+// the colour came from — no phase skew. (The free-running pix_x/tile_number
+// lags the live pixel and is only correct for the PAL_TRN/ATTR_TRN frame
+// scanner, where a constant offset is self-consistent.)
 // No channel swap (SGB data is RGB555, matching LCD pipeline).
-wire [1:0] pal_no_comb = attr_file[tile_number*2 +: 2];
+// ov_tile_number = (y/8)*20 + (x/8), computed as 16*row + 4*row + col (no DSP).
+wire [8:0] ov_tile_number = {lcd_pix_y[7:3], 4'b0000} + {2'b00, lcd_pix_y[7:3], 2'b00} + {4'b0000, lcd_pix_x[7:3]};
+wire [1:0] pal_no_comb = attr_file[ov_tile_number*2 +: 2];
 wire [14:0] _pal_raw = (mask_en_r == 2'd2) ? 15'd0 :
                        (!pal_read_idx || mask_en_r == 2'd3) ? palette[0][14:0] :
                        palette[pal_no_comb][pal_read_idx*15 +: 15];
