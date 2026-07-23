@@ -208,6 +208,7 @@ wire sel_zpram = (cpu_addr[15:7] == 9'b111111111) && // 127 bytes zero pageram a
                      (cpu_addr != 16'hffff);
 wire sel_audio = (cpu_addr[15:8] == 8'hff) &&        // audio reg ff10 - ff3f and ff76/ff77 PCM12/PCM34 (undocumented registers)
                     ((cpu_addr[7:5] == 3'b001) || (cpu_addr[7:4] == 4'b0001) || (cpu_addr[7:0] == 8'h76) || (cpu_addr[7:0] == 8'h77));
+wire sel_nr32  = (cpu_addr == 16'hff1c);             // NR32 - Wave channel output level (volume)
 
 wire sel_ext_bus = sel_rom | sel_cram | sel_wram;
 
@@ -396,8 +397,43 @@ always @(posedge clk_sys) begin
 end
 wire audio_slow = (oc_lvl == 2'd2) & audio_access_pending;
 
-// Clean, glitch-free clock enable. 
+// Detect CPU-timed PCM playback via rapid writes to NR32 (FF1C).
+// Pokémon Yellow / Pinball bit-bang Pikachu's voice through the wave
+// channel volume register — the CPU IS the DAC, so playback pitch is
+// directly proportional to CPU clock rate.  When overclocked, force
+// native speed during PCM to preserve correct pitch.
+// Normal gameplay writes NR32 at most once per note trigger; the PCM
+// loop writes it every ~179 CPU cycles.  A saturating counter that
+// increments per write and slowly decays cleanly separates the two.
+wire nr32_wr = !cpu_wr_n_edge & sel_nr32;
+
+reg [3:0] pcm_cnt;
+reg [8:0] pcm_decay;
+
+always @(posedge clk_sys) begin
+   if (reset_ss) begin
+      pcm_cnt   <= 0;
+      pcm_decay <= 0;
+   end else begin
+      if (ce_cpu & nr32_wr) begin
+         if (pcm_cnt < 4'hF) pcm_cnt <= pcm_cnt + 4'd1;
+         pcm_decay <= 0;
+      end else if (ce_2x & (pcm_cnt != 0)) begin
+         if (pcm_decay == 9'd511) begin
+            pcm_cnt   <= pcm_cnt - 4'd1;
+            pcm_decay <= 0;
+         end else begin
+            pcm_decay <= pcm_decay + 9'd1;
+         end
+      end
+   end
+end
+
+wire pcm_active = (pcm_cnt >= 4'd4) & (oc_lvl != 2'd0);
+
+// Clean, glitch-free clock enable.
 wire ce_cpu = force_native ? (cpu_speed ? ce_2x : ce) :
+              pcm_active   ? (cpu_speed ? ce_2x : ce) :
               audio_slow   ? ce_2x :
               (oc_lvl == 2'd2) ? ce_4x :
               (oc_lvl == 2'd1 || cpu_speed) ? ce_2x : ce;
