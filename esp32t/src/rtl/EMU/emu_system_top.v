@@ -268,7 +268,32 @@ module emu_system_top
             end
         end
     end
-    
+
+    // ----------------------------------------------------------------
+    // SGB dual-boot white-hold trigger. The reboot reset (gbreset) and the
+    // DMG/SGB boot ROM's LCD turn-on each blank the LCD, so with the
+    // backlight already on (isSGB_out latched at detection) the dual boot
+    // would flash white -> black -> white, jarring in the dark.
+    //
+    // sgb_reboot_hold is held high for the reboot reset window (set on the
+    // reboot request, cleared once gbreset deasserts). gb.v uses it to arm
+    // its own sgb_white_hold latch, which extends the hold across the whole
+    // transition — reset blank, LCD-off period, and LCD turn-on alignment —
+    // keeping the panel fed solid white (free-running videoBypass) until the
+    // SGB boot's LCD is stably on. See gb.v for the extended-hold logic.
+    // ----------------------------------------------------------------
+    reg sgb_reboot_hold;
+    always @(posedge hclk or negedge reset_n) begin
+        if (~reset_n)
+            sgb_reboot_hold <= 1'b0;
+        else if (~CART_RST_r2)
+            sgb_reboot_hold <= 1'b0;
+        else if (sgb_reboot_req)
+            sgb_reboot_hold <= 1'b1;
+        else if (sgb_reboot_hold && ~gbreset)
+            sgb_reboot_hold <= 1'b0;
+    end
+
     wire DMA_on;
     wire hdma_active;
     cart u_cart
@@ -448,6 +473,7 @@ module emu_system_top
         .boot_gba_en(1'd0),
         .fast_boot_en(1'd1),
         .skip_boot_rom(1'd0),  // reserved: cannot skip SGB boot ROM (packet TX required)
+        .sgb_reboot_hold(sgb_reboot_hold), // keep LCD white (no black flash) across the SGB dual-boot reset
         // audio
         .audio_l(snd_l),
         .audio_r(snd_r),

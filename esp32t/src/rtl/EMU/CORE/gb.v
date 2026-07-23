@@ -75,6 +75,7 @@ module gb (
     input boot_gba_en,
     input fast_boot_en,
     input skip_boot_rom,  // skip boot ROM on reset (e.g. SGB DMG reboot)
+    input sgb_reboot_hold, // hold LCD on white (videoBypass) across the SGB dual-boot reset
 
     // audio
     output [15:0] audio_l,
@@ -440,7 +441,34 @@ wire ce_cpu = force_native ? (cpu_speed ? ce_2x : ce) :
 
 // when hdma is enabled stop CPU (GBC). Finish read/write before stopping CPU
 wire hdma_cpu_stop = (isGBC & hdma_active & cpu_rd_n & cpu_wr_n);
-wire cpu_clken = ~hdma_cpu_stop & ce_cpu;
+
+// OC bus stall: hold the CPU while it holds a memory access to a region the
+// PPU has bus priority over - OAM during modes 2/3 (oam_cpu_allow low) and
+// VRAM during mode 3 (vram_cpu_allow low). Real DMG/CGB hardware freezes the
+// CPU for the duration of these accesses (WAIT states). This core ties
+// WAIT_n high and instead gates the access itself (oam_wr / cpu_wr_vram and
+// the cpu_di read mux require the *_allow flags), so a blocked access is
+// silently DROPPED rather than delayed.
+//
+// At 1x (and CGB double speed) the CPU advances lock-step with the PPU, so a
+// game's OAM/VRAM writes naturally land in the accessible windows (HBlank/
+// VBlank) and nothing is lost - that is why the drop behaviour is harmless
+// there and upstream keeps it. Under the 2x/4x overclock the CPU laps the PPU
+// and issues OAM/VRAM writes *inside* mode 2/3; those were dropped, corrupting
+// sprite attributes/tiles for a frame (Donkey Kong Land I/II sprite flicker).
+//
+// Gating cpu_clken low simply drops ce_cpu ticks (the same clock-enable
+// mechanism the rest of the core uses) until the PPU leaves the blocking mode,
+// so the access completes only once it is legal - matching hardware. No
+// deadlock is possible: the PPU always advances on ce independently of the
+// CPU, so mode 2/3 always ends and the block clears. LCD-off accesses are
+// unaffected (mode3/oam_eval are 0 there). Scoped to oc_lvl!=0 so the
+// validated 1x / CGB-double-speed paths stay identical to upstream.
+wire cpu_bus_blocked = (oc_lvl != 2'd0) & ~cpu_mreq_n &
+                       ( (sel_video_oam & ~oam_cpu_allow) |
+                         (sel_vram      & ~vram_cpu_allow) );
+
+wire cpu_clken = ~hdma_cpu_stop & ce_cpu & ~cpu_bus_blocked;
 
 reg reset_r  = 1;
 
@@ -832,9 +860,28 @@ wire lcd_vsync_overwrite;
 
 reg lcd_blankwait = 1'b0;
 
+// SGB dual-boot white hold. sgb_reboot_hold (from emu_system_top) is high for
+// the reboot reset window; this latch extends it across the whole transition:
+// the reset blank, the DMG/SGB boot's LCD-off period, and the LCD turn-on
+// alignment (videoBypass drives lcd_on_off=0 and stops the pixel clock for a
+// couple of frames when the boot ROM re-enables the LCD). Without this the
+// backlight-on dual boot flashes white -> black -> white. While held, the LCD
+// output stage is kept on the free-running white videoBypass path with lcd_on
+// forced high, so the panel is fed solid white the entire time. Released once
+// the main video LCD is stably on (past the turn-on alignment, at vsync).
+reg sgb_white_hold;
+always @(posedge clk_sys) begin
+   if (reset & ~sgb_reboot_hold)
+      sgb_white_hold <= 1'b0;
+   else if (sgb_reboot_hold)
+      sgb_white_hold <= 1'b1;
+   else if (sgb_white_hold && lcd_on_int && ~lcd_off_overwrite && lcd_vsync_int)
+      sgb_white_hold <= 1'b0;
+end
+
 always@(posedge clk_sys)
 begin
-   if(reset) begin
+   if(reset & ~sgb_white_hold) begin
        lcd_on <= 1'd0;
        lcd_vsync <= 1'd0;
        lcd_clkena <= 1'd0;
@@ -860,7 +907,7 @@ begin
          lcd_data   <= lcd_data_off;
          lcd_data_gb <= 2'b00;
          lcd_mode <= lcd_mode_off;
-         lcd_on <= lcd_on_off;
+         lcd_on <= sgb_white_hold ? 1'b1 : lcd_on_off; // hold white through the SGB turn-on alignment
          lcd_vsync <= lcd_vsync_off | lcd_vsync_overwrite;
          lcd_blankwait  <= 1'b1;
       end
@@ -954,7 +1001,7 @@ video video (
 );
 
 videoBypass videoBypass (
-    .reset       ( reset_ss      ),
+    .reset       ( reset_ss & ~sgb_white_hold ), // keep free-running (white) across the whole SGB dual-boot hold
     .clk         ( clk_sys       ),
     .ce          ( ce            ),   // 4Mhz
     .ce_cpu      ( ce_cpu        ),   //can be 2x in cgb double speed mode
