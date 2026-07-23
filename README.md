@@ -4,7 +4,9 @@ This repository houses the ModRetro Chromatic's FPGA design files.
 
 For more information about the ModRetro Chromatic, please see visit [ModRetro.com](https://modretro.com/).
 
-## ⚠️ WARNING: Overclock Mode may be unstable in this release. This fork is purely experimental and should not be used in production. Specifically, timing issues with Everdrive carts can result in SD card corruption. **Use at your own risk.**
+## ⚠️ CAUTION: Overclock Mode
+
+Changing the overclock speed during a card read or write may cause system instability. Please avoid making changes during these operations. Although the system logic automatically checks for cartridge activity, you should manually ensure no changes are made during these times as an extra precaution. Timing issues with EverDrive carts can result in SD card corruption. **No liability is accepted for potential data loss.**
 
 ## Setup
 
