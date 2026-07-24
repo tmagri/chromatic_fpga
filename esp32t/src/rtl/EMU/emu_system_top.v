@@ -56,7 +56,8 @@ module emu_system_top
     output [14:0]       gb_lcd_data,
     output [1:0]        gb_lcd_mode,
     output              gb_lcd_on,
-    output              gb_lcd_vsync
+    output              gb_lcd_vsync,
+    output              boot_done_out
     
 );
 
@@ -630,7 +631,11 @@ module emu_system_top
     always @(posedge hclk) begin
         gb_vsync_d            <= gb_raw_lcd_vsync;
         prev_boot_rom_enabled <= boot_rom_enabled;
-        if (~prev_boot_rom_enabled && boot_rom_enabled) begin
+        if (gbreset_ungated || gbreset || (~prev_boot_rom_enabled && boot_rom_enabled)) begin
+            // Re-arm on any reset (power-on, cart load, soft reset, SGB reboot)
+            // so the reset's own video noise (e.g. the EverDrive menu->ROM load
+            // showing the videoBypass fill / greenish reset garbage) is held
+            // black too, not just the boot-ROM window.
             boot_done          <= 1'b0;
             nonuniform_frames  <= 2'd0;
             frames_since_unmap <= 7'd0;
@@ -673,6 +678,7 @@ module emu_system_top
     assign gb_lcd_mode   = gb_raw_lcd_mode;
     assign gb_lcd_on     = gb_raw_lcd_on;
     assign gb_lcd_vsync  = gb_raw_lcd_vsync;
+    assign boot_done_out = boot_done;
     
     audio_filter u_audio_filter
     (
