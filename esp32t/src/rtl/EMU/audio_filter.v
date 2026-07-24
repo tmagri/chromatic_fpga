@@ -10,17 +10,6 @@ module audio_filter
 	output [15:0] filter_r
 );
 
-// ----------------------------------------------------------------
-// Shift-only replacement for the 3-tap IIR + DC_blocker.
-// Saves 7 MULT27X36 DSPs and ~1300 CLS vs. the original.
-//
-// Signal chain (per channel, at ~65.5 kHz sample rate):
-//   1. 2-stage cascaded 1-pole IIR low-pass   y = (x + y) >>> 1
-//      → 2-pole, fc ≈ 7 kHz, 12 dB/oct
-//   2. 1-pole DC blocker                      y += x − x_prev − (y >>> 8)
-//      → high-pass, fc ≈ 41 Hz
-// ----------------------------------------------------------------
-
 // Capture stable input (same as original)
 reg [15:0] cl, cr;
 reg [15:0] cl1, cl2, cr1, cr2;
@@ -54,36 +43,61 @@ always @(posedge clk or posedge reset) begin
 	end
 end
 
-// 2-stage cascaded 1-pole IIR low-pass (no multipliers)
-reg signed [15:0] lp1_l, lp2_l;
-reg signed [15:0] lp1_r, lp2_r;
+// ----------------------------------------------------------------
+// 2-stage cascaded 1-pole IIR low-pass running at full clock rate
+// to perform anti-aliasing before downsampling.
+// fc = fs * (1/256) / (2 * pi) = 16.777M / 1608 = ~10.4 kHz per pole
+// Cascaded -3dB point: ~6.7 kHz
+// ----------------------------------------------------------------
 
-// DC blocker with 24-bit accumulator
-reg signed [23:0] dc_l, dc_r;
-reg signed [15:0] dc_x_l, dc_x_r;
+wire signed [31:0] cl_ext = {cl, 16'd0};
+wire signed [31:0] cr_ext = {cr, 16'd0};
+
+reg signed [31:0] lp1_l, lp2_l;
+reg signed [31:0] lp1_r, lp2_r;
 
 always @(posedge clk) begin
 	if (reset) begin
 		lp1_l <= 0; lp2_l <= 0;
 		lp1_r <= 0; lp2_r <= 0;
-		dc_l  <= 0; dc_r  <= 0;
-		dc_x_l <= 0; dc_x_r <= 0;
-	end else if (sample_ce) begin
-		// Low-pass stage 1: y = (x + y) / 2
-		lp1_l <= ($signed(cl) + $signed(lp1_l)) >>> 1;
-		lp1_r <= ($signed(cr) + $signed(lp1_r)) >>> 1;
-		// Low-pass stage 2: y = (x + y) / 2
-		lp2_l <= ($signed(lp1_l) + $signed(lp2_l)) >>> 1;
-		lp2_r <= ($signed(lp1_r) + $signed(lp2_r)) >>> 1;
-		// DC blocker: y += x − x_prev − y/256
-		dc_l <= dc_l + $signed(lp2_l) - $signed(dc_x_l) - (dc_l >>> 8);
-		dc_r <= dc_r + $signed(lp2_r) - $signed(dc_x_r) - (dc_r >>> 8);
-		dc_x_l <= lp2_l;
-		dc_x_r <= lp2_r;
+	end else begin
+		lp1_l <= lp1_l + ((cl_ext - lp1_l) >>> 8);
+		lp1_r <= lp1_r + ((cr_ext - lp1_r) >>> 8);
+		lp2_l <= lp2_l + ((lp1_l - lp2_l) >>> 8);
+		lp2_r <= lp2_r + ((lp1_r - lp2_r) >>> 8);
 	end
 end
 
-assign filter_l = a_en ? dc_l[15:0] : 16'd0;
-assign filter_r = a_en ? dc_r[15:0] : 16'd0;
+// Downsample and apply fractional scaling (0.625x) to match
+// the overall gain profile of the original IIR filter (which was ~0.61x).
+wire signed [15:0] ds_l = lp2_l[31:16];
+wire signed [15:0] ds_r = lp2_r[31:16];
+
+wire signed [15:0] scaled_l = (ds_l >>> 1) + (ds_l >>> 3);
+wire signed [15:0] scaled_r = (ds_r >>> 1) + (ds_r >>> 3);
+
+// ----------------------------------------------------------------
+// Original high-precision DC Blocker module (0 DSPs)
+// ----------------------------------------------------------------
+
+DC_blocker dcb_l
+(
+	.clk(clk),
+	.ce(sample_ce),
+	.sample_rate(1'b0),
+	.mute(~a_en),
+	.din(scaled_l),
+	.dout(filter_l)
+);
+
+DC_blocker dcb_r
+(
+	.clk(clk),
+	.ce(sample_ce),
+	.sample_rate(1'b0),
+	.mute(~a_en),
+	.din(scaled_r),
+	.dout(filter_r)
+);
 
 endmodule
