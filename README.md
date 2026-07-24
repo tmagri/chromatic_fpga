@@ -4,6 +4,12 @@ This repository houses the ModRetro Chromatic's FPGA design files.
 
 For more information about the ModRetro Chromatic, please see visit [ModRetro.com](https://modretro.com/).
 
+## Release Notes
+
+- **Super Gameboy & Overclocking**: This revised core adds support for Super Gameboy and Overclocking features!
+- **Feature Freeze**: The FPGA chip is currently at 96% utilization, meaning adding new features is no longer feasible. Moving forward, only bug fixes will be checked and merged.
+- **Overclock Warning**: Consider Overclock mode to always be unstable, especially at 4x speed. **Do NOT use 4x mode while in the EverDrive menu**, or games will fail to boot. It is strongly advised to only enable 4x mode once you are already actively running a game.
+
 ## ⚠️ CAUTION: Overclock Mode
 
 Changing the overclock speed during a card read or write may cause system instability. Please avoid making changes during these operations. Although the system logic automatically checks for cartridge activity, you should manually ensure no changes are made during these times as an extra precaution. Timing issues with EverDrive carts can result in SD card corruption. **No liability is accepted for potential data loss.**
