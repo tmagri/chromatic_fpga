@@ -269,31 +269,6 @@ module emu_system_top
         end
     end
 
-    // ----------------------------------------------------------------
-    // SGB dual-boot white-hold trigger. The reboot reset (gbreset) and the
-    // DMG/SGB boot ROM's LCD turn-on each blank the LCD, so with the
-    // backlight already on (isSGB_out latched at detection) the dual boot
-    // would flash white -> black -> white, jarring in the dark.
-    //
-    // sgb_reboot_hold is held high for the reboot reset window (set on the
-    // reboot request, cleared once gbreset deasserts). gb.v uses it to arm
-    // its own sgb_white_hold latch, which extends the hold across the whole
-    // transition — reset blank, LCD-off period, and LCD turn-on alignment —
-    // keeping the panel fed solid white (free-running videoBypass) until the
-    // SGB boot's LCD is stably on. See gb.v for the extended-hold logic.
-    // ----------------------------------------------------------------
-    reg sgb_reboot_hold;
-    always @(posedge hclk or negedge reset_n) begin
-        if (~reset_n)
-            sgb_reboot_hold <= 1'b0;
-        else if (~CART_RST_r2)
-            sgb_reboot_hold <= 1'b0;
-        else if (sgb_reboot_req)
-            sgb_reboot_hold <= 1'b1;
-        else if (sgb_reboot_hold && ~gbreset)
-            sgb_reboot_hold <= 1'b0;
-    end
-
     wire DMA_on;
     wire hdma_active;
     cart u_cart
@@ -473,7 +448,6 @@ module emu_system_top
         .boot_gba_en(1'd0),
         .fast_boot_en(1'd1),
         .skip_boot_rom(1'd0),  // reserved: cannot skip SGB boot ROM (packet TX required)
-        .sgb_reboot_hold(sgb_reboot_hold), // keep LCD white (no black flash) across the SGB dual-boot reset
         // audio
         .audio_l(snd_l),
         .audio_r(snd_r),
@@ -628,8 +602,74 @@ module emu_system_top
     // Data is replaced with SGB palette color when palette is active.
     wire use_sgb_pal = sgb_game_detected & sgb_pal_en_w;
 
+    // Hold the LCD *pixels* black from power-on until the game's first real
+    // picture, so the boot ROM frame, the SGB dual-boot's leftover white, AND
+    // any solid-colour init screen all stay hidden -- e.g. Pokemon's Init turns
+    // the LCD on to a cleared-VRAM white screen (BGP=0) before LoadSGB and the
+    // intro, and a blank-counter heuristic wakes on that white, producing
+    // white->intro-black->title-white. The backlight itself is on from panel
+    // init (see top.v), so this black is a lit black and the game wakes with no
+    // backlight pop. "Real picture" is detected as a *non-uniform* frame: a
+    // cleared-VRAM / BGP=0 / videoBypass-off frame is uniform (every pixel
+    // identical) whereas actual content (a logo, sprites, the Pokemon shooting
+    // star) is not, so we release on the first few non-uniform frames after the
+    // boot ROM unmaps. A long timeout (gated on lcd_on_int) is the safety net
+    // for the rare game whose first screen is a single solid colour. A new boot
+    // (boot_rom_enabled rising = power-on or cart change) re-arms; there is NO
+    // memrst reset, so a cart-detect/PLL glitch during play cannot disturb the
+    // picture. SGB packet capture is unaffected -- sgb.v reads the un-overridden
+    // gb_raw / SGB taps, not gb_lcd_data.
+    reg        boot_done;
+    reg        prev_boot_rom_enabled;
+    reg [14:0] frame_ref;
+    reg        frame_started;
+    reg        frame_nonuniform;
+    reg [1:0]  nonuniform_frames;
+    reg [6:0]  frames_since_unmap;
+    reg        gb_vsync_d;
+    always @(posedge hclk) begin
+        gb_vsync_d            <= gb_raw_lcd_vsync;
+        prev_boot_rom_enabled <= boot_rom_enabled;
+        if (~prev_boot_rom_enabled && boot_rom_enabled) begin
+            boot_done          <= 1'b0;
+            nonuniform_frames  <= 2'd0;
+            frames_since_unmap <= 7'd0;
+            frame_started      <= 1'b0;
+            frame_nonuniform   <= 1'b0;
+        end else if (~boot_done) begin
+            if (gb_raw_lcd_vsync & ~gb_vsync_d) begin
+                // Tally the just-finished frame (read before resetting it).
+                if (~boot_rom_enabled) begin
+                    if (lcd_on_int && frame_nonuniform) begin
+                        if (nonuniform_frames < 2'd2)
+                            nonuniform_frames <= nonuniform_frames + 2'd1;
+                    end else
+                        nonuniform_frames <= 2'd0;
+                    if (frames_since_unmap < 7'd63)
+                        frames_since_unmap <= frames_since_unmap + 7'd1;
+                    if (nonuniform_frames >= 2'd2
+                            || (frames_since_unmap >= 7'd60 && lcd_on_int))
+                        boot_done <= 1'b1;
+                end
+                frame_started    <= 1'b0;
+                frame_nonuniform <= 1'b0;
+            end
+            if (gb_raw_lcd_clkena) begin
+                if (!frame_started) begin
+                    frame_ref     <= gb_raw_lcd_data;
+                    frame_started <= 1'b1;
+                end else if (gb_raw_lcd_data != frame_ref)
+                    frame_nonuniform <= 1'b1;
+            end
+        end
+    end
+
     assign gb_lcd_clkena = gb_raw_lcd_clkena;
-    assign gb_lcd_data   = use_sgb_pal ? sgb_pal_out_w : gb_raw_lcd_data;
+    // Drive black until boot_done (boot ROM frame + SGB leftover white + the
+    // game's init blank all stay hidden); SGB packet capture is unaffected --
+    // sgb.v reads the un-overridden gb_raw / SGB taps, not gb_lcd_data.
+    assign gb_lcd_data   = boot_done ? (use_sgb_pal ? sgb_pal_out_w : gb_raw_lcd_data)
+                                     : 15'h0000;
     assign gb_lcd_mode   = gb_raw_lcd_mode;
     assign gb_lcd_on     = gb_raw_lcd_on;
     assign gb_lcd_vsync  = gb_raw_lcd_vsync;

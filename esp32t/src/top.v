@@ -686,7 +686,13 @@ module top #(parameter ISSIMU=0)
         .BTN_START(BTN_START_filtered),
         .menuDisabled(menuDisabled),
         .LCD_BACKLIGHT_INIT(LCD_BACKLIGHT_INIT),
-        .LCD_INIT_DONE(LCD_INIT_DONE & (~boot_rom_enabled | isSGB_out)),
+        // Backlight ON as soon as the panel is initialised (LCD_INIT_DONE): the
+        // boot's forced-black screen is then a *lit* black, and the game appears
+        // with no backlight "pop" because the backlight is already on. The boot
+        // ROM / SGB dual-boot / leftover-white flash is suppressed by forcing
+        // the LCD *pixels* black until boot_done in emu_system_top (the
+        // backlight no longer gates that).
+        .LCD_INIT_DONE(LCD_INIT_DONE),
         .LCD_PWM(LCD_PWM),
         .hAdcReq_ext(hAdcReq_ext),
         //.hAdcValue_r1(voltageSim),

@@ -75,7 +75,6 @@ module gb (
     input boot_gba_en,
     input fast_boot_en,
     input skip_boot_rom,  // skip boot ROM on reset (e.g. SGB DMG reboot)
-    input sgb_reboot_hold, // hold LCD on white (videoBypass) across the SGB dual-boot reset
 
     // audio
     output [15:0] audio_l,
@@ -860,28 +859,9 @@ wire lcd_vsync_overwrite;
 
 reg lcd_blankwait = 1'b0;
 
-// SGB dual-boot white hold. sgb_reboot_hold (from emu_system_top) is high for
-// the reboot reset window; this latch extends it across the whole transition:
-// the reset blank, the DMG/SGB boot's LCD-off period, and the LCD turn-on
-// alignment (videoBypass drives lcd_on_off=0 and stops the pixel clock for a
-// couple of frames when the boot ROM re-enables the LCD). Without this the
-// backlight-on dual boot flashes white -> black -> white. While held, the LCD
-// output stage is kept on the free-running white videoBypass path with lcd_on
-// forced high, so the panel is fed solid white the entire time. Released once
-// the main video LCD is stably on (past the turn-on alignment, at vsync).
-reg sgb_white_hold;
-always @(posedge clk_sys) begin
-   if (reset & ~sgb_reboot_hold)
-      sgb_white_hold <= 1'b0;
-   else if (sgb_reboot_hold)
-      sgb_white_hold <= 1'b1;
-   else if (sgb_white_hold && lcd_on_int && ~lcd_off_overwrite && lcd_vsync_int)
-      sgb_white_hold <= 1'b0;
-end
-
 always@(posedge clk_sys)
 begin
-   if(reset & ~sgb_white_hold) begin
+   if(reset) begin
        lcd_on <= 1'd0;
        lcd_vsync <= 1'd0;
        lcd_clkena <= 1'd0;
@@ -907,7 +887,7 @@ begin
          lcd_data   <= lcd_data_off;
          lcd_data_gb <= 2'b00;
          lcd_mode <= lcd_mode_off;
-         lcd_on <= sgb_white_hold ? 1'b1 : lcd_on_off; // hold white through the SGB turn-on alignment
+         lcd_on <= lcd_on_off;
          lcd_vsync <= lcd_vsync_off | lcd_vsync_overwrite;
          lcd_blankwait  <= 1'b1;
       end
@@ -1001,7 +981,7 @@ video video (
 );
 
 videoBypass videoBypass (
-    .reset       ( reset_ss & ~sgb_white_hold ), // keep free-running (white) across the whole SGB dual-boot hold
+    .reset       ( reset_ss      ),
     .clk         ( clk_sys       ),
     .ce          ( ce            ),   // 4Mhz
     .ce_cpu      ( ce_cpu        ),   //can be 2x in cgb double speed mode
